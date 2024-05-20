@@ -229,6 +229,55 @@ class ADAGrad(Optimizer):
         return new_weights + new_optimizer_weights
 
 
+class Adadelta(Optimizer):
+    def __init__(
+        self,
+        model,
+        loss_fn,
+        *,
+        ndim_out: int = 1,
+        learning_rate: TensorLike = 1.0,
+        rho: TensorLike = 0.9,
+        epsilon: TensorLike = 1e-8,
+    ):
+
+        self.learning_rate = learning_rate
+        self.rho = rho
+        self.epsilon = epsilon
+
+        u_weights = [param.type() for param in model.weights]
+        v_weights = [param.type() for param in model.weights]
+        optimizer_weights = u_weights + v_weights
+        super().__init__(
+            model, loss_fn, ndim_out=ndim_out, optimizer_weights=optimizer_weights
+        )
+
+    def update_parameters(
+        self, weights: list[TensorVariable], loss: TensorVariable
+    ) -> list[TensorVariable]:
+        weights, optimizer_weights = self._split_weights(weights)
+        u_weights, v_weights = self._split_weights(optimizer_weights)
+
+        grads = grad(loss, weights)
+
+        new_weights = []
+        new_u_weights = []
+        new_v_weights = []
+
+        for param, d_loss_d_param, u, v in zip(weights, grads, u_weights, v_weights):
+            new_v = v * self.rho + d_loss_d_param**2 * (1 - self.rho)
+            weight_update = (
+                sqrt(u + self.epsilon) / sqrt(new_v + self.epsilon)
+            ) * d_loss_d_param
+            new_u = u * self.rho + weight_update**2 * (1 - self.rho)
+
+            new_weights.append(param - self.learning_rate * weight_update)
+            new_u_weights.append(new_u)
+            new_v_weights.append(new_v)
+
+        return new_weights + new_u_weights + new_v_weights
+
+
 class Adam(Optimizer):
     def __init__(
         self,
