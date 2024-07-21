@@ -1,38 +1,37 @@
-import pytensor.tensor as pt
 from abc import ABC, abstractmethod
 from typing import Literal
 
+import pytensor.tensor as pt
+
 from pytensor.tensor.basic import as_tensor_variable
 
-
-Reductions = Literal['mean', 'sum']
+Reductions = Literal["mean", "sum"]
 reduction_dict = {"mean": pt.mean, "sum": pt.sum}
 
 
 class Loss(ABC):
     @abstractmethod
-    def loss(self, y_true, y_pred) -> pt.TensorVariable:
-        ...
+    def loss(self, y_true, y_pred) -> pt.TensorVariable: ...
 
     def __call__(self, y_true, y_pred) -> pt.TensorVariable:
         return self.loss(y_true, y_pred)
 
 
-
 class SquaredError(Loss):
-    def __init__(self, reduction: Reductions = 'mean'):
+    def __init__(self, reduction: Reductions = "mean"):
         self.reduction = reduction_dict[reduction]
 
     def loss(self, y_true, y_pred) -> pt.TensorVariable:
-            return self.reduction(((y_true - y_pred) ** 2))
+        return self.reduction((y_true - y_pred) ** 2)
 
 
 class CrossEntropy(Loss):
-    def __init__(self,
-                 reduction: Reductions = 'mean',
-                 expect_logits: bool = False,
-                 expect_onehot_labels: bool = False):
-
+    def __init__(
+        self,
+        reduction: Reductions = "mean",
+        expect_logits: bool = False,
+        expect_onehot_labels: bool = False,
+    ):
         self.reduction = reduction_dict[reduction]
         self.expect_logits = expect_logits
         self.expect_onehot_labels = expect_onehot_labels
@@ -49,6 +48,8 @@ class CrossEntropy(Loss):
 
         Returns
         -------
+        pt.TensorVariable
+            The loss value
 
         """
         y_true = as_tensor_variable(y_true)
