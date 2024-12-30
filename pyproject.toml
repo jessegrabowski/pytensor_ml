@@ -1,3 +1,57 @@
+[build-system]
+requires = ["setuptools", "versioneer[toml]"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "pytensor-ml"
+dynamic = ['version']
+description = "A(nother) deep learning library, built on top of Pytensor"
+authors = [{name="Jesse Grabowski", email='jessegrabowski@gmail.com'}, {name="Ricardo Vieira"}]
+license = { file = "LICENSE" }
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python",
+  "Topic :: Scientific/Engineering",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
+  "Operating System :: Unix",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+keywords = [
+  "neural network",
+  "deep learning",
+  "autograd",
+  "gradient descent",
+  "pymc"
+]
+
+dependencies = [
+  "pytensor",
+  "numpy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "versioneer",
+]
+
+[tool.versioneer]
+VCS = "git"
+style = "pep440"
+versionfile_source = "pytensor_ml/_version.py"
+versionfile_build = "pytensor_ml/_version.py"
+tag_prefix = 'v'
+
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 xfail_strict=true
@@ -13,7 +67,6 @@ exclude = ["versioneer.py"]
 
 [tool.ruff.lint]
 select = ["D", "E", "F", "I", "UP", "W", "RUF"]
-ignore-init-module-imports = true
 ignore = [
   "E501",
   "F841", # Local variable name is assigned to but never used
@@ -48,7 +101,4 @@ ignore = [
 lines-between-types = 1
 
 [tool.ruff.lint.extend-per-file-ignores]
-"__init__.py" = [
-  "F401", # Module imported but unused
-  "F403", # 'from module import *' used; unable to detect undefined names
-]
+"pytensor_ml/_version.py" = ["D", "E", "F", "I", "UP", "W", "RUF"]
