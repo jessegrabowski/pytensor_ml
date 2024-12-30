@@ -1,25 +1,19 @@
 # To use:
 #
-#   $ conda env create -f environment.yml  # `mamba` works too for this command
+#   $ conda env create -f conda_envs/pytensor_ml.yml  # `mamba` works too for this command
 #   $ conda activate pytensor-dev
 #
-name: pytensor-ml
+name: pytensor_ml
 channels:
   - conda-forge
-  - nvidia
+  - nodefaults
 
 dependencies:
   - python>=3.12
   - pytensor
   - pymc
   - numpy
-
-  # GPU Stuff
-  - jax
-  - numpyro
-  - blackjax
-  - jaxlib=*=*cuda*
-  - cuda-nvcc
+  - scikit-learn
 
   # For testing
   - coveralls
@@ -37,10 +31,5 @@ dependencies:
   - pydot
   - ipython
 
-  # code style
-  - ruff
-
   # developer tools
   - pre-commit
-  - packaging
-  - typing_extensions

@@ -1,25 +1,65 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.3.0
+  rev: v5.0.0
   hooks:
     -   id: check-merge-conflict
     -   id: check-toml
     -   id: check-yaml
     -   id: debug-statements
     -   id: end-of-file-fixer
-        exclude: .txt$
+    -   id: no-commit-to-branch
+        args: [--branch, main]
     -   id: trailing-whitespace
-    -   id: requirements-txt-fixer
+
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.2.1
+  rev: v0.8.4
   hooks:
     - id: ruff
-      args: ["--fix", "--output-format=full"]
+      args: [ --fix, --exit-non-zero-on-fix ]
     - id: ruff-format
+      types_or: [ python, pyi, jupyter ]
+
+- repo: https://github.com/MarcoGorelli/madforhooks
+  rev: 0.4.1
+  hooks:
+    - id: no-print-statements
+      types: [python]
+      exclude: |
+        (?x)^
+        |pytensor_ml/_version.py
+    - id: check-execution-order
+      args: [--strict]
+
 - repo: local
   hooks:
-    - id: no-relative-imports
-      name: No relative imports
-      entry: from \.[\.\w]* import
-      types: [python]
+    - id: notebook_name
+      entry: '\(notebook_name\)='
       language: pygrep
+      minimum_pre_commit_version: 2.8.0
+      name: Check notebooks do not use literally notebook_name as target
+      types: [jupyter]
+
+    - id: no-references-as-links
+      name: Check no references that should be sphinx cross-references are urls
+      description: >-
+        'A quick check to prevent urls pointing to pymc docs or other sphinx built docs like arviz, numpy, scipy...'
+      files: ^examples/.+\.ipynb$
+      exclude: >
+          (?x)(index.md|
+               404.md|
+               conf.py)
+      entry: >
+          (?x)(arviz-devs.github.io|
+               pymc-experimental.readthedocs.io|
+               docs.pymc.io|
+               numpy.org/doc|
+               pymc-examples.readthedocs.io|
+               docs.python.org|
+               xarray.pydata.org
+               python.arviz.org|
+               pytensor.readthedocs.io|
+               docs.xarray.dev|
+               www.pymc.io|
+               docs.scipy.org/doc)
+      language: pygrep
+      types_or: [markdown, rst, jupyter]
