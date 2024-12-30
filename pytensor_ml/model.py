@@ -31,7 +31,7 @@ class Model:
         self._weight_values: list[np.ndarray[float]] | None = None
         self._predict_fn = None
 
-    def initalize_weights(
+    def initialize_weights(
         self,
         scheme: InitializationSchemes = "xavier_normal",
         random_seed: int | str | np.random.Generator | None = None,
