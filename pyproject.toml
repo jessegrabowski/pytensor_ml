@@ -42,6 +42,7 @@ dev = [
     "pytest",
     "pytest-cov",
     "versioneer",
+    "sklearn"
 ]
 
 [tool.versioneer]
@@ -68,8 +69,7 @@ exclude = ["versioneer.py"]
 [tool.ruff.lint]
 select = ["D", "E", "F", "I", "UP", "W", "RUF", "TID252"]
 ignore = [
-  "E501",
-  "F841", # Local variable name is assigned to but never used
+  "E501",  # Line too long
   "RUF001", # String contains ambiguous character (such as Greek letters)
   "RUF002", # Docstring contains ambiguous character (such as Greek letters)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`

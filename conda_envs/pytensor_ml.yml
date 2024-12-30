@@ -13,6 +13,7 @@ dependencies:
   - pytensor
   - pymc
   - numpy
+  - sklearn
 
   # For testing
   - coveralls
