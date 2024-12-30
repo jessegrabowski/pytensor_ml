@@ -1,14 +1,15 @@
 import pytensor.tensor as pt
+
 from pytensor_ml.layers import Layer
 
 
-class Activation(Layer):
-    ...
+class Activation(Layer): ...
+
 
 class ReLU(Activation):
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.maximum(0, x)
-        out.name = f'ReLU'
+        out.name = "ReLU"
         return out
 
 
@@ -18,20 +19,23 @@ class LeakyReLU(Activation):
 
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.switch(x > 0, x, -self.negative_slope * x)
-        out.name = 'LeakyReLU'
+        out.name = "LeakyReLU"
         return out
+
 
 class Tanh(Activation):
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
-        out =  pt.tanh(x)
-        out.name = 'TanH'
+        out = pt.tanh(x)
+        out.name = "TanH"
         return out
+
 
 class Sigmoid(Activation):
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.sigmoid(x)
-        out.name = 'Sigmoid'
+        out.name = "Sigmoid"
         return out
+
 
 class Softmax(Activation):
     def __init__(self, axis: int = -1):
@@ -39,15 +43,8 @@ class Softmax(Activation):
 
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.special.softmax(x, axis=self.axis)
-        out.name = 'Softmax'
+        out.name = "Softmax"
         return out
 
 
-
-__all__ = [
-    'ReLU',
-    'LeakyReLU',
-    'Sigmoid',
-    'Tanh',
-    'Softmax'
-]
+__all__ = ["LeakyReLU", "ReLU", "Sigmoid", "Softmax", "Tanh"]

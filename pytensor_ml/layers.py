@@ -1,21 +1,23 @@
-from pytensor.tensor import tensor, TensorLike, as_tensor, squeeze, concatenate
-from typing import Callable
 from abc import ABC
+from collections.abc import Callable
+
+from pytensor.tensor import TensorLike, as_tensor, concatenate, squeeze, tensor
+
 
 class Layer(ABC):
-    def __call__(self, x: TensorLike) -> TensorLike:
-        ...
+    def __call__(self, x: TensorLike) -> TensorLike: ...
+
 
 class Linear(Layer):
-    __props__ = ('name', 'n_out')
+    __props__ = ("name", "n_out")
 
     def __init__(self, name: str | None, n_in: int, n_out: int):
         self.name = name
         self.n_in = n_in
         self.n_out = n_out
 
-        self.W = tensor(f'{self.name}_W', shape=(n_in, self.n_out))
-        self.b = tensor(f'{self.name}_b', shape=(self.n_out,))
+        self.W = tensor(f"{self.name}_W", shape=(n_in, self.n_out))
+        self.b = tensor(f"{self.name}_b", shape=(self.n_out,))
 
     def __call__(self, X: TensorLike) -> TensorLike:
         X = as_tensor(X)
@@ -43,14 +45,9 @@ def Sequential(*layers: Callable) -> Callable:
 
     return forward
 
+
 Squeeze = squeeze
 Concatenate = concatenate
 
 
-__all__ = [
-    'Linear',
-    'Input'
-    'Sequential'
-    'Squeeze',
-    'Concatenate'
-]
+__all__ = ["Concatenate", "Input", "Linear", "Sequential", "Squeeze"]
