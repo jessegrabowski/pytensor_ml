@@ -42,7 +42,7 @@ dev = [
     "pytest",
     "pytest-cov",
     "versioneer",
-    "sklearn"
+    "scikit-learn"
 ]
 
 [tool.versioneer]
