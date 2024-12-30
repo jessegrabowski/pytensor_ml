@@ -6,6 +6,7 @@
 name: pytensor_ml
 channels:
   - conda-forge
+  - nvidia
   - nodefaults
 
 dependencies:
@@ -13,6 +14,13 @@ dependencies:
   - pytensor
   - pymc
   - numpy
+
+  # GPU Stuff
+  - jax
+  - numpyro
+  - blackjax
+  - jaxlib=*=*cuda*
+  - cuda-nvcc
 
   # For testing
   - coveralls
@@ -30,5 +38,10 @@ dependencies:
   - pydot
   - ipython
 
+  # code style
+  - ruff
+
   # developer tools
   - pre-commit
+  - packaging
+  - typing_extensions
