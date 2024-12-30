@@ -19,7 +19,7 @@ def required_graph_inputs(tensor: TensorVariable) -> Generator[TensorVariable, N
     return (
         cast(TensorVariable, var)
         for var in graph_inputs([tensor])
-        if not isinstance(var, (Constant, SharedVariable))
+        if not isinstance(var, Constant | SharedVariable)
     )
 
 
