@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 
 [project]
-name = "pytensor-ml"
+name = "pytensor_ml"
 dynamic = ['version']
 description = "A(nother) deep learning library, built on top of Pytensor"
 authors = [{name="Jesse Grabowski", email='jessegrabowski@gmail.com'}, {name="Ricardo Vieira"}]
