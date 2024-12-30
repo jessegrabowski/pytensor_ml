@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.6.0
+  rev: v5.0.0
   hooks:
     -   id: check-merge-conflict
     -   id: check-toml
@@ -10,12 +10,6 @@ repos:
     -   id: no-commit-to-branch
         args: [--branch, main]
     -   id: trailing-whitespace
-
-- repo: https://github.com/asottile/pyupgrade
-  rev: v3.16.0
-  hooks:
-    - id: pyupgrade
-      args: [--py312-plus]
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
   rev: v0.8.4
@@ -33,18 +27,9 @@ repos:
       exclude: |
         (?x)^
         |pytensor_ml/_version.py
-
-- repo: https://github.com/MarcoGorelli/absolufy-imports
-  rev: v0.3.1
-  hooks:
-    - id: absolufy-imports
-      types: [python]
-
-- repo: https://github.com/MarcoGorelli/madforhooks
-  rev: 0.4.1
-  hooks:
     - id: check-execution-order
       args: [--strict]
+
 - repo: local
   hooks:
     - id: notebook_name
