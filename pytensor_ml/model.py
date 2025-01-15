@@ -4,7 +4,7 @@ from typing import Literal, cast
 
 import numpy as np
 
-from pytensor import config
+from pytensor import config, graph_replace
 from pytensor.compile.function import function
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import graph_inputs
@@ -37,6 +37,24 @@ class Model:
         random_seed: int | str | np.random.Generator | None = None,
     ):
         self._weight_values = initialize_weights(self, scheme, random_seed)
+
+    def initialize_from_pymc(
+        self, outputs: TensorVariable | list[TensorVariable] | None = None, model=None
+    ):
+        import pymc as pm
+
+        model = pm.modelcontext(model)
+
+        if outputs is None:
+            outputs = self.y
+
+        replacement_dict = {}
+        for var in required_graph_inputs(self.y):
+            if var.name not in model.named_vars:
+                raise ValueError(f"Variable {var.name} not found in PyMC model")
+            replacement_dict[var] = model[var.name]
+
+        return graph_replace(outputs, replacement_dict, strict=True)
 
     @property
     def weights(self) -> list[TensorVariable]:
