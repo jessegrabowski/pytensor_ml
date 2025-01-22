@@ -24,19 +24,21 @@ def required_graph_inputs(tensor: TensorVariable) -> Generator[TensorVariable, N
 
 
 class Model:
-    def __init__(self, X: TensorVariable, y: TensorVariable):
+    def __init__(self, X: TensorVariable, y: TensorVariable | None = None):
         self.X = X
         self.y = y
 
         self._weight_values: list[np.ndarray[float]] | None = None
         self._predict_fn = None
+        self._updates = {}
 
-    def initalize_weights(
+    def initialize(
         self,
         scheme: InitializationSchemes = "xavier_normal",
         random_seed: int | str | np.random.Generator | None = None,
     ):
         self._weight_values = initialize_weights(self, scheme, random_seed)
+        # self._updates = initialize_updates(self)
 
     def initialize_from_pymc(
         self, outputs: TensorVariable | list[TensorVariable] | None = None, model=None
@@ -46,13 +48,23 @@ class Model:
         model = pm.modelcontext(model)
 
         if outputs is None:
+            if self.y is None:
+                raise ValueError(
+                    "Must provide explicit output if y was not provided during Model construction"
+                )
             outputs = self.y
+        else:
+            self.y = outputs
+
+        self.initialize()
+        init_dict = dict(zip([w.name for w in self.weights], self.weight_values))
 
         replacement_dict = {}
         for var in required_graph_inputs(self.y):
             if var.name not in model.named_vars:
                 raise ValueError(f"Variable {var.name} not found in PyMC model")
             replacement_dict[var] = model[var.name]
+            model.set_initval(model[var.name], init_dict[var.name])
 
         return graph_replace(outputs, replacement_dict, strict=True)
 
@@ -71,9 +83,19 @@ class Model:
         for i, new_value in enumerate(values):
             self._weight_values[i][:] = new_value
 
+    @property
+    def updates(self) -> dict[SharedVariable:SharedVariable]:
+        if self._updates is None:
+            raise ValueError("Updates have not been initialized")
+        return self._updates
+
+    @updates.setter
+    def updates(self, new_updates: dict[SharedVariable:SharedVariable]):
+        self._updates = self._updates | new_updates
+
     def predict(self, X_values: np.ndarray) -> np.ndarray:
         if self._predict_fn is None:
-            f = function([*self.weights, self.X], self.y)
+            f = function([*self.weights, self.X], self.y, updates=self._updates)
             self._predict_fn = partial(f, *self.weight_values)
 
         return self._predict_fn(X_values)
