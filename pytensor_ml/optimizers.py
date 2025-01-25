@@ -86,7 +86,6 @@ class Optimizer(ABC):
         fn = function(
             [x, y, *weights, *optimizer_weights],
             [*all_weights, loss],
-            include_prediction_rewrites=False,
             **compile_kwargs,
         )
         fn.trust_input = True
