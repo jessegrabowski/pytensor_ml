@@ -3,7 +3,6 @@ import sys
 
 from pytensor_ml._version import get_versions
 from pytensor_ml.pytensorf import function
-from pytensor_ml.rewriting.layers import inline_layers, remove_dropout_for_prediction  # noqa: F401
 
 _log = logging.getLogger(__name__)
 

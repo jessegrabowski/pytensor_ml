@@ -5,7 +5,10 @@ import pytensor
 from pymc.pytensorf import SeedSequenceSeed, collect_default_updates, reseed_rngs
 from pytensor import Mode
 from pytensor.compile import Function, SharedVariable, get_mode
-from pytensor.graph import rewrite_graph
+from pytensor.graph import FunctionGraph, RewriteDatabaseQuery, rewrite_graph
+from pytensor.tensor.variable import Variable
+
+from pytensor_ml.rewriting.layers import predict_db
 
 
 def atleast_list(x):
@@ -14,13 +17,11 @@ def atleast_list(x):
     return x
 
 
-# Alias compile to function to match vanilla pytensor
 def function(
     inputs,
     outputs,
     random_seed: SeedSequenceSeed = None,
     mode=None,
-    include_prediction_rewrites: bool = False,
     **kwargs,
 ) -> Function:
     """
@@ -35,8 +36,6 @@ def function(
     random_seed: int, array-like of int or SeedSequence, optional
         Seed used to override any RandomState/Generator shared variables in the graph.
         If not specified, the value of original shared variables will still be overwritten.
-    include_prediction_rewrites: bool, optional
-        If True, include additional rewrites specific to making predicitons
     mode: optional
         PyTensor mode used to compile the function
 
@@ -56,12 +55,8 @@ def function(
         rngs = cast(list[SharedVariable], list(rng_updates))
         reseed_rngs(rngs, random_seed)
 
-    rewrites = ["random_make_inplace"]
-    if include_prediction_rewrites:
-        rewrites.append("prediction")
-
     mode = get_mode(mode)
-    opt_qry = mode.provided_optimizer.including(*rewrites)
+    opt_qry = mode.provided_optimizer.including("random_make_inplace")
     mode = Mode(linker=mode.linker, optimizer=opt_qry)
     pytensor_function = pytensor.function(
         inputs,
@@ -75,8 +70,26 @@ def function(
 
 def rewrite_pregrad(graph):
     """Apply simplifying or stabilizing rewrites to graph that are safe to use pre-grad."""
-    # TODO: inline_layers is a fix for https://github.com/pymc-devs/pymc/issues/7657
-    return rewrite_graph(graph, include=("canonicalize", "stabilize", "inline_layers"))
+    return rewrite_graph(graph, include=("canonicalize", "stabilize"))
+
+
+def rewrite_for_prediction(graph):
+    """Apply rewrites to specialize a graph for forward passes (e.g. removing Dropout layers)"""
+    if isinstance(graph, FunctionGraph):
+        fgraph = graph
+    else:
+        outputs = [graph] if isinstance(graph, Variable) else graph
+        fgraph = FunctionGraph(outputs=outputs, clone=False)
+
+    rewriter = predict_db.query(RewriteDatabaseQuery(include=["basic"]))
+    rewriter.rewrite(fgraph)
+
+    if isinstance(graph, FunctionGraph):
+        return fgraph
+    if isinstance(graph, Variable):
+        return fgraph.outputs[0]
+
+    return fgraph.outputs
 
 
 __all__ = ["function"]

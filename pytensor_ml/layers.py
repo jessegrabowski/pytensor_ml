@@ -68,7 +68,7 @@ class Dropout(Layer):
         X = as_tensor(X)
         new_rng, mask = ptr.bernoulli(p=1 - self.p, size=X.shape, rng=self.rng).owner.outputs
 
-        X_masked, _ = DropoutLayer(inputs=[X, self.rng], outputs=[X * mask, new_rng])(X, self.rng)
+        X_masked = DropoutLayer(inputs=[X, mask], outputs=[X * mask], inline=True)(X, mask)
         X_masked.name = f"{self.name}[p = {self.p}]"
 
         return X_masked

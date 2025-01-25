@@ -11,7 +11,7 @@ from pytensor.graph.basic import Constant
 from pytensor.printing import debugprint
 from pytensor.tensor import TensorVariable
 
-from pytensor_ml.pytensorf import function
+from pytensor_ml.pytensorf import function, rewrite_for_prediction
 
 InitializationSchemes = Literal["zeros", "xavier_uniform", "xavier_normal"]
 
@@ -59,13 +59,12 @@ class Model:
         if self._predict_fn is None:
             f = function(
                 [*self.weights, self.X],
-                self.y,
-                include_prediction_rewrites=True,
+                rewrite_for_prediction(self.y),
                 **self._compile_kwargs,
             )
             self._predict_fn = partial(f, *self.weight_values)
 
-        return self._predict_fn(X_values)
+        return cast(np.ndarray, self._predict_fn(X_values))
 
     def __str__(self):
         return debugprint(self.y, file="str")

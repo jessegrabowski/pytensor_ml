@@ -3,9 +3,9 @@ import pytest
 
 from pytensor.graph.basic import explicit_graph_inputs
 from pytensor.graph.fg import FunctionGraph
-from pytensor.graph.rewriting.utils import rewrite_graph
 
-from pytensor_ml.layers import Dropout, DropoutLayer, Linear, LinearLayer, Sequential
+from pytensor_ml.layers import Dropout, DropoutLayer, Linear, Sequential
+from pytensor_ml.pytensorf import rewrite_for_prediction
 
 
 @pytest.fixture()
@@ -32,23 +32,6 @@ def test_remove_dropout(feature_extractor_and_rng):
     fg = FunctionGraph(inputs=list(explicit_graph_inputs(latent)) + rngs, outputs=[latent])
 
     assert len([node.op for node in fg.apply_nodes if isinstance(node.op, DropoutLayer)]) == 2
-    fg = rewrite_graph(fg, include=("prediction",))
+    fg = rewrite_for_prediction(fg)
 
     assert len([node.op for node in fg.apply_nodes if isinstance(node.op, DropoutLayer)]) == 0
-
-
-def test_inline_layers(feature_extractor_and_rng):
-    feature_extractor, rngs = feature_extractor_and_rng
-
-    X = pt.tensor("X", shape=(None, 6))
-    latent = feature_extractor(X)
-
-    fg = FunctionGraph(inputs=list(explicit_graph_inputs(latent)) + rngs, outputs=[latent])
-
-    assert len([node.op for node in fg.apply_nodes if isinstance(node.op, DropoutLayer)]) == 2
-    assert len([node.op for node in fg.apply_nodes if isinstance(node.op, LinearLayer)]) == 2
-
-    fg = rewrite_graph(fg, include=("inline_layers",))
-
-    assert len([node.op for node in fg.apply_nodes if isinstance(node.op, DropoutLayer)]) == 0
-    assert len([node.op for node in fg.apply_nodes if isinstance(node.op, LinearLayer)]) == 0

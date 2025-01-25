@@ -57,9 +57,6 @@ def test_dropout():
     dropout = Dropout(name="Dropout_1", p=1.0)
     out = dropout(X)
 
-    X_in, rng = out.owner.inputs
-    X_out, new_rng = out.owner.outputs
-
     X_np = np.random.normal(size=(10, 6)).astype(floatX)
 
     res = out.eval({X: X_np})
