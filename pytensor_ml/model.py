@@ -5,12 +5,13 @@ from typing import Literal, cast
 import numpy as np
 
 from pytensor import config
-from pytensor.compile.function import function
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import graph_inputs
 from pytensor.graph.basic import Constant
 from pytensor.printing import debugprint
 from pytensor.tensor import TensorVariable
+
+from pytensor_ml.pytensorf import function, rewrite_for_prediction
 
 InitializationSchemes = Literal["zeros", "xavier_uniform", "xavier_normal"]
 
@@ -24,10 +25,11 @@ def required_graph_inputs(tensor: TensorVariable) -> Generator[TensorVariable, N
 
 
 class Model:
-    def __init__(self, X: TensorVariable, y: TensorVariable):
+    def __init__(self, X: TensorVariable, y: TensorVariable, compile_kwargs: dict | None = None):
         self.X = X
         self.y = y
 
+        self._compile_kwargs = compile_kwargs if compile_kwargs else {}
         self._weight_values: list[np.ndarray[float]] | None = None
         self._predict_fn = None
 
@@ -55,10 +57,14 @@ class Model:
 
     def predict(self, X_values: np.ndarray) -> np.ndarray:
         if self._predict_fn is None:
-            f = function([*self.weights, self.X], self.y)
+            f = function(
+                [*self.weights, self.X],
+                rewrite_for_prediction(self.y),
+                **self._compile_kwargs,
+            )
             self._predict_fn = partial(f, *self.weight_values)
 
-        return self._predict_fn(X_values)
+        return cast(np.ndarray, self._predict_fn(X_values))
 
     def __str__(self):
         return debugprint(self.y, file="str")
