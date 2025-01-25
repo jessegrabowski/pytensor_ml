@@ -70,7 +70,7 @@ class Optimizer(ABC):
         update_fn: Function
             A function that updates the model weights given a batch of data, targets, and current weights.
         """
-
+        compile_kwargs = compile_kwargs if compile_kwargs else {}
         x, y_hat = self.model.X, self.model.y
 
         label_slice = (slice(None),) * self.ndim_out + (0,) * (y_hat.ndim - self.ndim_out)
