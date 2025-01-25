@@ -1,17 +1,21 @@
 import numpy as np
 
+from pytensor import config
+
 
 class DataLoader:
-    def __init__(self, X, y, batch_size=64):
+    def __init__(self, X, y, batch_size=64, dtype=None):
+        if dtype is None:
+            dtype = config.floatX
         self.rng = np.random.default_rng()
 
-        self.X = X
-        self.y = y
+        self.X = X.astype(dtype)
+        self.y = y.astype(dtype)
         self.n = X.shape[0]
 
         self.batch_size = batch_size
         self.cursor = 0
-        self.indices = np.arange(len(X))
+        self.indices = np.arange(len(X)).astype("int32")
         self.reset()
 
     def shuffle(self):

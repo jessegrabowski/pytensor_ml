@@ -97,6 +97,8 @@ ignore = [
   "D415",
   "D417",
 ]
+fixable = ["ALL"]
+
 
 [tool.ruff.lint.isort]
 lines-between-types = 1
