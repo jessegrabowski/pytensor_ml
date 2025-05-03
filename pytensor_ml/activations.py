@@ -37,6 +37,13 @@ class Sigmoid(Activation):
         return out
 
 
+class SoftPlus(Activation):
+    def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
+        out = pt.softplus(x)
+        out.name = "SoftPlus"
+        return out
+
+
 class Softmax(Activation):
     def __init__(self, axis: int = -1):
         self.axis = axis
