@@ -1,17 +1,17 @@
 from collections.abc import Generator
 from functools import partial
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 
 from pytensor import config
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import graph_inputs
-from pytensor.graph.basic import Constant
+from pytensor.graph.basic import Constant, ancestors
 from pytensor.printing import debugprint
 from pytensor.tensor import TensorVariable
 
-from pytensor_ml.pytensorf import function, rewrite_for_prediction
+from pytensor_ml.pytensorf import LayerOp, function, rewrite_for_prediction
 
 InitializationSchemes = Literal["zeros", "xavier_uniform", "xavier_normal"]
 
@@ -25,12 +25,19 @@ def required_graph_inputs(tensor: TensorVariable) -> Generator[TensorVariable, N
 
 
 class Model:
-    def __init__(self, X: TensorVariable, y: TensorVariable, compile_kwargs: dict | None = None):
+    def __init__(
+        self,
+        X: TensorVariable,
+        y: TensorVariable,
+        random_state: Any | None = None,
+        compile_kwargs: dict | None = None,
+    ):
         self.X = X
         self.y = y
 
         self._compile_kwargs = compile_kwargs if compile_kwargs else {}
         self._weight_values: list[np.ndarray[float]] | None = None
+        self._non_trainable_values: list[np.ndarray[float]] | None = None
         self._predict_fn = None
 
     def initialize_weights(
@@ -40,14 +47,48 @@ class Model:
     ):
         self._weight_values = initialize_weights(self, scheme, random_seed)
 
+    def initialize_non_trainable_values(self) -> list[np.ndarray]:
+        if self.updates[0]:
+            values = [
+                self.rng.uniform(0, 1, param.type.shape).astype(param.type.dtype)
+                for param in self.updates[0]
+            ]
+            self._non_trainable_values = values
+        else:
+            self._non_trainable_values = []
+
     @property
     def weights(self) -> list[TensorVariable]:
-        return [var for var in required_graph_inputs(self.y) if var is not self.X]
+        not_trainable = {self.X}
+        for ancestor in ancestors([self.y]):
+            node = ancestor.owner
+            if node is not None and isinstance(node.op, LayerOp):
+                for input_idx in node.op.update_map().values():
+                    not_trainable.add(node.inputs[input_idx])
+
+        return [var for var in required_graph_inputs(self.y) if var not in not_trainable]
+
+    @property
+    def updates(self) -> tuple[list[TensorVariable], list[TensorVariable]]:
+        updates = {}
+        for ancestor in ancestors([self.y]):
+            node = ancestor.owner
+            if node is not None and isinstance(node.op, LayerOp):
+                for output_idx, input_idx in node.op.update_map().items():
+                    new_value = node.outputs[output_idx]
+                    old_value = node.inputs[input_idx]
+                    assert old_value.type.dtype == new_value.type.dtype
+                    updates[old_value] = new_value
+
+        if updates:
+            return list(updates.keys()), list(updates.values())
+
+        return [], []
 
     @property
     def weight_values(self) -> list[np.ndarray[float]]:
         if self._weight_values is None:
-            raise ValueError("Weights have not been initialized")
+            self.initialize_weights()
         return self._weight_values
 
     @weight_values.setter
@@ -55,14 +96,26 @@ class Model:
         for i, new_value in enumerate(values):
             self._weight_values[i][:] = new_value
 
+    @property
+    def non_trainable_values(self) -> list[np.ndarray[float]]:
+        if self._non_trainable_values is None:
+            self.initialize_non_trainable_values()
+        return self._non_trainable_values
+
+    @non_trainable_values.setter
+    def non_trainable_values(self, values: list[np.ndarray[float]]):
+        for i, new_value in enumerate(values):
+            self._non_trainable_values[i][:] = new_value
+
     def predict(self, X_values: np.ndarray) -> np.ndarray:
+        y_pred = rewrite_for_prediction(self.y)
         if self._predict_fn is None:
             f = function(
-                [*self.weights, self.X],
-                rewrite_for_prediction(self.y),
+                [*self.weights, *self.updates[0], self.X],
+                y_pred,
                 **self._compile_kwargs,
             )
-            self._predict_fn = partial(f, *self.weight_values)
+            self._predict_fn = partial(f, *self.weight_values, *self.non_trainable_values)
 
         return cast(np.ndarray, self._predict_fn(X_values))
 
