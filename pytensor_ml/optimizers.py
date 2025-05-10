@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from functools import wraps
+from typing import Any
 
 import numpy as np
 import pytensor
@@ -54,7 +55,9 @@ class Optimizer(ABC):
         ndim_out: int = 1,
         optimizer_weights: list[TensorVariable] | None = None,
         compile_kwargs: dict | None = None,
+        random_state: Any | None = None,
     ):
+        self.rng = np.random.default_rng(random_state)
         self.model = model
         self.loss_fn = loss_fn
         self.ndim_out = ndim_out
@@ -77,7 +80,10 @@ class Optimizer(ABC):
 
     def _initialize_weights(self) -> list[np.ndarray]:
         if self.optimizer_weights:
-            return [np.zeros(param.type.shape) for param in self.optimizer_weights]
+            return [
+                np.zeros(param.type.shape, dtype=param.type.dtype)
+                for param in self.optimizer_weights
+            ]
         return []
 
     def _split_weights(

@@ -35,6 +35,8 @@ class Model:
         self.X = X
         self.y = y
 
+        self.rng = np.random.default_rng(random_state)
+
         self._compile_kwargs = compile_kwargs if compile_kwargs else {}
         self._weight_values: list[np.ndarray[float]] | None = None
         self._non_trainable_values: list[np.ndarray[float]] | None = None
@@ -127,14 +129,14 @@ def _zero_init(shape: tuple[int], *args) -> np.ndarray:
     return np.zeros(shape, dtype=config.floatX)
 
 
-def _xavier_uniform_init(shape: tuple[int], rng: np.random.Generator) -> np.ndarray:
+def _xavier_uniform_init(shape: tuple[int], dtype, rng: np.random.Generator) -> np.ndarray:
     scale = np.sqrt(6.0 / np.sum([x for x in shape if x is not None]))
-    return rng.uniform(-scale, scale, size=shape).astype(config.floatX)
+    return rng.uniform(-scale, scale, size=shape).astype(dtype)
 
 
-def _xavier_normal_init(shape: tuple[int], rng: np.random.Generator) -> np.ndarray:
+def _xavier_normal_init(shape: tuple[int], dtype, rng: np.random.Generator) -> np.ndarray:
     scale = np.sqrt(2.0 / np.sum([x for x in shape if x is not None]))
-    return rng.normal(0, scale, size=shape).astype(config.floatX)
+    return rng.normal(0, scale, size=shape).astype(dtype)
 
 
 initialization_factory = {
@@ -147,15 +149,13 @@ initialization_factory = {
 def initialize_weights(
     model, scheme: InitializationSchemes, random_seed: int | str | np.random.Generator | None
 ):
-    if isinstance(random_seed, str):
-        random_seed = sum(map(ord, random_seed))
-    if isinstance(random_seed, int) or random_seed is None:
-        random_seed = np.random.default_rng(random_seed)
+    rng = np.random.default_rng(random_seed)
 
     initial_values = []
     for var in model.weights:
         shape = var.type.shape
+        dtype = var.type.dtype
         f_initialize = initialization_factory[scheme]
-        initial_values.append(f_initialize(shape, random_seed))
+        initial_values.append(f_initialize(shape, dtype, rng))
 
     return initial_values
