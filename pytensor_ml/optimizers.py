@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+from functools import wraps
 
 import numpy as np
+import pytensor
+import pytensor.tensor as pt
 
 from pytensor import config
 from pytensor.compile.function.types import Function
@@ -10,6 +13,37 @@ from pytensor.tensor import TensorLike, TensorVariable, sqrt, tensor
 
 from pytensor_ml.model import Model
 from pytensor_ml.pytensorf import function, rewrite_pregrad
+
+
+def split_output_wrapper(fn: Callable, *splits) -> Callable:
+    """
+    Wraps a function to return the weights and optimizer weights separately.
+
+    Parameters
+    ----------
+    fn: Function
+        The function to wrap.
+    splits: int
+
+    Returns
+    -------
+    Function
+        A wrapped function that returns the model weights and optimizer weights separately.
+    """
+    splits = np.cumsum(splits)
+
+    @wraps(fn)
+    def wrapped_fn(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        output = []
+        cursor = 0
+        for split in splits:
+            output.append(result[cursor:split])
+            cursor = split
+        output.append(result[cursor:])
+        return output
+
+    return wrapped_fn
 
 
 class Optimizer(ABC):
@@ -78,19 +112,25 @@ class Optimizer(ABC):
 
         weights = self.model.weights
         optimizer_weights = self.optimizer_weights
+        update_inputs, update_outputs = self.model.updates
 
         loss = self.loss_fn(y, y_hat)
         loss = rewrite_pregrad(loss)
 
         all_weights = self.update_parameters(weights + optimizer_weights, loss)
+
+        weights_fn_inputs = [pytensor.In(w, mutable=True) for w in self.model.weights]
+        optimizer_weights_fn_inputs = [pytensor.In(w, mutable=True) for w in self.optimizer_weights]
+        non_trainable_fn_inputs = [pytensor.In(w, mutable=True) for w in update_inputs]
+
         fn = function(
-            [x, y, *weights, *optimizer_weights],
-            [*all_weights, loss],
+            [x, y, *weights_fn_inputs, *optimizer_weights_fn_inputs, *non_trainable_fn_inputs],
+            [*all_weights, *update_outputs, loss],
+            trust_input=True,
             **compile_kwargs,
         )
-        fn.trust_input = True
 
-        return fn
+        return split_output_wrapper(fn, len(weights), len(optimizer_weights), len(update_outputs))
 
     def step(self, x_values, y_values) -> np.ndarray:
         """
@@ -100,11 +140,19 @@ class Optimizer(ABC):
         -------
         loss
         """
-        *new_weights, loss_values = self.update_fn(
-            x_values, y_values, *self.model.weight_values, *self.optimizer_weights_values
+
+        new_weights, new_optimizer_weights, new_non_trainable_values, loss_values = self.update_fn(
+            x_values,
+            y_values,
+            *self.model.weight_values,
+            *self.optimizer_weights_values,
+            *self.model.non_trainable_values,
         )
 
-        self.model.weight_values, self.optimizer_weights_values = self._split_weights(new_weights)
+        self.model.weight_values = new_weights
+        self.model.non_trainable_values = new_non_trainable_values
+
+        self.optimizer_weights_values = new_optimizer_weights
 
         return loss_values
 
@@ -168,7 +216,7 @@ class ADAGrad(Optimizer):
 
         for param, d_loss_d_param, g2 in zip(weights, grads, optimizer_weights):
             new_g2 = g2 + d_loss_d_param**2
-            weight_update = d_loss_d_param / np.sqrt(new_g2 + self.epsilon)
+            weight_update = d_loss_d_param / pt.sqrt(new_g2 + self.epsilon)
             new_weights.append(param - self.learning_rate * weight_update)
             new_optimizer_weights.append(new_g2)
 
