@@ -26,34 +26,39 @@ class LinearLayer(LayerOp):
 
 
 class Linear(Layer):
-    __props__ = ("name", "n_in", "n_out")
-
-    def __init__(self, name: str | None, n_in: int, n_out: int):
+    def __init__(self, name: str | None, n_in: int, n_out: int, bias: bool = True):
         self.name = name if name else "Linear"
         self.n_in = n_in
         self.n_out = n_out
+        self.bias = bias
 
         self.W = pt.tensor(f"{self.name}_W", shape=(n_in, self.n_out))
-        self.b = pt.tensor(f"{self.name}_b", shape=(self.n_out,))
+
+        if self.bias:
+            self.b = pt.tensor(f"{self.name}_b", shape=(self.n_out,))
 
     def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
         X = pt.as_tensor(X)
 
         init_st_shape = shape_to_str(X.type.shape)
 
-        res = X @ self.W + self.b
+        res = X @ self.W
+        inputs = [X, self.W]
+        if self.bias:
+            res += self.b
+            inputs.append(self.b)
 
         final_st_shape = shape_to_str(res.type.shape)
 
         ofg = LinearLayer(
-            inputs=[X, self.W, self.b],
+            inputs=inputs,
             outputs=[res],
             name=f"{self.name}[{init_st_shape} -> {final_st_shape}]",
             n_in=self.n_in,
             n_out=self.n_out,
             bias=self.bias,
         )
-        out = ofg(X, self.W, self.b)
+        out = ofg(*inputs)
         out.name = f"{self.name}_output"
 
         return out
