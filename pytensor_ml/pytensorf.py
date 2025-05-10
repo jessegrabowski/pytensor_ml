@@ -5,10 +5,28 @@ import pytensor
 from pymc.pytensorf import SeedSequenceSeed, collect_default_updates, reseed_rngs
 from pytensor import Mode
 from pytensor.compile import Function, SharedVariable, get_mode
+from pytensor.compile.builders import OpFromGraph
 from pytensor.graph import FunctionGraph, RewriteDatabaseQuery, rewrite_graph
 from pytensor.tensor.variable import Variable
 
-from pytensor_ml.rewriting.layers import predict_db
+
+class LayerOp(OpFromGraph):
+    # This can be removed once https://github.com/pymc-devs/pytensor/issues/1114 is fixed
+
+    __props__ = ()
+
+    def __init__(self, *args, **kwargs):
+        prop_kwargs = {key: value for key, value in kwargs.items() if key in self.__props__}
+        kwargs = {key: value for key, value in kwargs.items() if key not in self.__props__}
+
+        for key, value in prop_kwargs.items():
+            setattr(self, key, value)
+
+        super().__init__(*args, **kwargs)
+
+    def update_map(self) -> dict[int, int]:
+        """Return a mapping of output indexes to input indexes"""
+        return {}
 
 
 def atleast_list(x):
