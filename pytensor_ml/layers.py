@@ -88,6 +88,126 @@ class Dropout(Layer):
         return X_masked
 
 
+class BatchNormLayer(LayerOp):
+    __props__ = ("n_in", "epsilon", "momentum", "affine")
+
+    def update_map(self):
+        return {1: 3, 2: 4}
+
+
+class NoRunningStatsBatchNormLayer(LayerOp):
+    __props__ = ("n_in", "epsilon", "momentum", "affine")
+
+
+class PredictionBatchNormLayer(LayerOp):
+    __props__ = ("n_in", "epsilon", "momentum", "affine")
+
+
+class BatchNorm2D(Layer):
+    def __init__(
+        self,
+        name: str | None = None,
+        n_in: int | None = None,
+        epsilon: float = 1e-5,
+        momentum: float = 0.1,
+        affine: bool = True,
+        track_running_stats: bool = True,
+    ):
+        self.name = name if name else "BatchNorm"
+        self.n_in = n_in
+        self.epsilon = epsilon
+        self.momentum = momentum
+        self.affine = affine
+        self.track_running_stats = track_running_stats
+
+        self.beta = None
+        self.gamma = None
+
+        self.running_mean = None
+        self.running_var = None
+
+        self.initialized = False
+        self._initialize_params(None)
+
+    def _initialize_params(self, X: pt.TensorLike | None):
+        if self.initialized:
+            return
+
+        if self.n_in is None and X is None:
+            self.gamma = None
+            self.beta = None
+            return
+
+        if X is not None:
+            n_in = X.type.shape[-1]
+        else:
+            n_in = self.n_in
+
+        if self.affine:
+            self.gamma = pt.tensor(f"{self.name}_gamma", shape=(n_in,))
+            self.beta = pt.tensor(f"{self.name}_beta", shape=(n_in,))
+            self.initialized = True
+
+        else:
+            self.initialized = True
+
+    def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
+        X = pt.as_tensor(X)
+        inputs = [X]
+
+        self._initialize_params(X)
+
+        mu = X.mean(axis=0)
+        sigma_sq = X.var(axis=0)
+
+        X_normalized = (X - mu) / pt.sqrt(sigma_sq + self.epsilon)
+
+        if self.affine:
+            X_rescaled = X_normalized * self.gamma + self.beta
+            inputs.extend([self.gamma, self.beta])
+
+        else:
+            X_rescaled = X_normalized
+
+        if self.track_running_stats:
+            self.running_mean = mu.type(name=f"{self.name}_running_mean")
+            self.running_var = sigma_sq.type(name=f"{self.name}_running_var")
+
+            new_running_mean = self.momentum * mu + (1 - self.momentum) * self.running_mean
+            new_running_var = self.momentum * sigma_sq + (1 - self.momentum) * self.running_var
+
+            batch_norm_op = BatchNormLayer(
+                inputs=[*inputs, self.running_mean, self.running_var],
+                outputs=[X_rescaled, new_running_mean, new_running_var],
+                name=f"{self.name}",
+                n_in=self.n_in,
+                epsilon=self.epsilon,
+                momentum=self.momentum,
+                affine=self.affine,
+            )
+
+            X_transformed, self.new_running_mean, self.new_running_var = batch_norm_op(
+                *inputs, self.running_mean, self.running_var
+            )
+
+        else:
+            batch_norm_op = NoRunningStatsBatchNormLayer(
+                inputs=inputs,
+                outputs=[X_rescaled],
+                name=f"{self.name}",
+                n_in=self.n_in,
+                epsilon=self.epsilon,
+                momentum=self.momentum,
+                affine=self.affine,
+            )
+
+            X_transformed = batch_norm_op(*inputs)
+
+        X_transformed.name = f"{self.name}_output"
+
+        return X_transformed
+
+
 def Input(name: str, shape: tuple[int]) -> pt.TensorLike:
     if not all(isinstance(dim, int) for dim in shape):
         raise ValueError("All dimensions must be integers")
@@ -108,4 +228,4 @@ Squeeze = pt.squeeze
 Concatenate = pt.concatenate
 
 
-__all__ = ["Concatenate", "Dropout", "Input", "Linear", "Sequential", "Squeeze"]
+__all__ = ["BatchNorm2D", "Concatenate", "Dropout", "Input", "Linear", "Sequential", "Squeeze"]
