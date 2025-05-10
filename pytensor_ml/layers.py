@@ -9,6 +9,8 @@ from pytensor import config
 from pytensor.compile.builders import OpFromGraph
 from pytensor.compile.sharedvalue import shared
 
+from pytensor_ml.pytensorf import LayerOp
+
 
 def shape_to_str(shape):
     inner = ",".join([str(st_dim) if st_dim is not None else "?" for st_dim in shape])
@@ -16,10 +18,11 @@ def shape_to_str(shape):
 
 
 class Layer(ABC):
-    def __call__(self, x: pt.TensorLike) -> pt.TensorLike: ...
+    def __call__(self, x: pt.TensorLike) -> pt.TensorVariable: ...
 
 
-class LinearLayer(OpFromGraph): ...
+class LinearLayer(LayerOp):
+    __props__ = ("n_in", "n_out", "bias")
 
 
 class Linear(Layer):
@@ -45,8 +48,10 @@ class Linear(Layer):
         ofg = LinearLayer(
             inputs=[X, self.W, self.b],
             outputs=[res],
-            inline=True,
             name=f"{self.name}[{init_st_shape} -> {final_st_shape}]",
+            n_in = self.n_in,
+            n_out = self.n_out,
+            bias = self.bias,
         )
         out = ofg(X, self.W, self.b)
         out.name = f"{self.name}_output"
@@ -54,7 +59,8 @@ class Linear(Layer):
         return out
 
 
-class DropoutLayer(OpFromGraph): ...
+class DropoutLayer(LayerOp):
+    __props__ = ("p",)
 
 
 class Dropout(Layer):
