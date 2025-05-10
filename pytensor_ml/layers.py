@@ -1,12 +1,12 @@
 from abc import ABC
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
 import pytensor.tensor.random as ptr
 
 from pytensor import config
-from pytensor.compile.builders import OpFromGraph
 from pytensor.compile.sharedvalue import shared
 
 from pytensor_ml.pytensorf import LayerOp
@@ -49,9 +49,9 @@ class Linear(Layer):
             inputs=[X, self.W, self.b],
             outputs=[res],
             name=f"{self.name}[{init_st_shape} -> {final_st_shape}]",
-            n_in = self.n_in,
-            n_out = self.n_out,
-            bias = self.bias,
+            n_in=self.n_in,
+            n_out=self.n_out,
+            bias=self.bias,
         )
         out = ofg(X, self.W, self.b)
         out.name = f"{self.name}_output"
@@ -64,24 +64,26 @@ class DropoutLayer(LayerOp):
 
 
 class Dropout(Layer):
-    __props__ = ("name", "p")
-
-    def __init__(self, name: str | None, p: float = 0.5):
+    def __init__(self, name: str | None = None, p: float = 0.5, random_state: Any | None = None):
         if p < 0.0 or p > 1.0:
             raise ValueError(f"Dropout probability has to be between 0 and 1, but got {p}")
         self.name = name if name else "Dropout"
         self.p = p
-        self.rng = shared(np.random.default_rng())
+        self.rng = shared(np.random.default_rng(random_state))
 
     def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
         X = pt.as_tensor(X)
-        new_rng, mask = ptr.bernoulli(p=1 - self.p, size=X.shape, rng=self.rng).owner.outputs
+        p = pt.as_tensor(self.p, dtype=config.floatX)
+        new_rng, mask = ptr.bernoulli(p=1 - p, size=X.shape, rng=self.rng).owner.outputs
         mask = mask.astype(config.floatX)
 
         X_masked = DropoutLayer(
-            inputs=[X, mask], outputs=[pt.where(mask, ift=X / (1 - self.p), iff=0)], inline=True
+            inputs=[X, mask],
+            outputs=[pt.where(mask, ift=X / (1 - p), iff=0)],
+            name=f"{self.name}[p = {self.p}]",
+            p=self.p,
         )(X, mask)
-        X_masked.name = f"{self.name}[p = {self.p}]"
+        X_masked.name = f"{self.name}_output"
 
         return X_masked
 
@@ -106,4 +108,4 @@ Squeeze = pt.squeeze
 Concatenate = pt.concatenate
 
 
-__all__ = ["Concatenate", "Input", "Linear", "Sequential", "Squeeze"]
+__all__ = ["Concatenate", "Dropout", "Input", "Linear", "Sequential", "Squeeze"]
