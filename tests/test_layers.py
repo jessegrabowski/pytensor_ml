@@ -16,26 +16,29 @@ def rng():
     return np.random.default_rng()
 
 
-def test_linear_layer(rng):
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no_bias"])
+def test_linear_layer(bias, rng):
     X = pt.tensor("X", shape=(None, 6))
-    linear = Linear(name="Linear_1", n_in=6, n_out=3)
+    linear = Linear(name="Linear_1", n_in=6, n_out=3, bias=bias)
     out = linear(X)
 
-    X_in, W, b = out.owner.inputs
+    X_in, *weights = out.owner.inputs
     [X_out] = out.owner.outputs
 
     assert out.owner.op.name == "Linear_1[(?,6) -> (?,3)]"
 
-    assert W.name == "Linear_1_W"
-    assert b.name == "Linear_1_b"
+    expected_names = ["Linear_1_W", "Linear_1_b"] if bias else ["Linear_1_W"]
+    assert [w.name for w in weights] == expected_names
+
     assert X_out.name == "Linear_1_output"
 
     X_np = rng.normal(size=(10, 6)).astype(floatX)
     W_np = rng.normal(size=(6, 3)).astype(floatX)
     b_np = rng.normal(size=(3,)).astype(floatX)
 
-    res = out.eval({X: X_np, W: W_np, b: b_np})
-    np.testing.assert_allclose(res, X_np @ W_np + b_np)
+    res = out.eval({X: X_np, **dict(zip(weights, [W_np, b_np], strict=False))})
+    expected = X_np @ W_np + b_np if bias else X_np @ W_np
+    np.testing.assert_allclose(res, expected)
 
 
 def test_sequential(rng):
