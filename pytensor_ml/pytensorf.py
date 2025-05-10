@@ -93,11 +93,13 @@ def rewrite_pregrad(graph):
 
 def rewrite_for_prediction(graph):
     """Apply rewrites to specialize a graph for forward passes (e.g. removing Dropout layers)"""
+    from pytensor_ml.rewriting.layers import predict_db
+
     if isinstance(graph, FunctionGraph):
         fgraph = graph
     else:
         outputs = [graph] if isinstance(graph, Variable) else graph
-        fgraph = FunctionGraph(outputs=outputs, clone=False)
+        fgraph = FunctionGraph(outputs=outputs, clone=True, copy_inputs=False)
 
     rewriter = predict_db.query(RewriteDatabaseQuery(include=["basic"]))
     rewriter.rewrite(fgraph)
