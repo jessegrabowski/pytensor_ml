@@ -33,3 +33,5 @@ dependencies:
 
   # developer tools
   - pre-commit
+  # 05/11/25 - Windows compile bug, see: https://discourse.pymc.io/t/wierd-problem-installing-pymc/16984/13
+  - libgcc<15
