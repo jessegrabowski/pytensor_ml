@@ -102,8 +102,8 @@ def test_batch_norm_2d_forward(n_in, rng):
     res = out.eval(
         {
             X: X_np,
-            batch_norm.gamma: gamma_np,
-            batch_norm.beta: beta_np,
+            batch_norm.scale: gamma_np,
+            batch_norm.loc: beta_np,
             batch_norm.running_mean: np.zeros_like(mean_np),
             batch_norm.running_var: np.zeros_like(var_np),
         }
@@ -119,19 +119,19 @@ def test_batch_norm_2d_learns_population_stats():
     batch_norm = BatchNorm2D(name="BatchNorm_1", n_in=32, momentum=0.05, epsilon=1e-8)
     X_normalized = batch_norm(X)
 
-    _, gamma, beta, running_mean, running_var = X_normalized.owner.inputs
+    _, loc, scale, running_mean, running_var = X_normalized.owner.inputs
     _, new_running_mean, new_running_var = X_normalized.owner.outputs
 
     loss = pt.square(X_normalized - X).mean()
-    d_loss = pt.grad(loss, [beta, gamma])
+    d_loss = pt.grad(loss, [loc, scale])
     f = pytensor.function(
-        [beta, gamma, running_mean, running_var, X],
+        [loc, scale, running_mean, running_var, X],
         [X_normalized, new_running_mean, new_running_var, loss, *d_loss],
     )
 
     estimates = [
-        np.zeros(32, dtype=beta.type.dtype),
-        np.zeros(32, dtype=gamma.type.dtype),
+        np.zeros(32, dtype=loc.type.dtype),
+        np.zeros(32, dtype=scale.type.dtype),
         np.zeros(32, dtype=running_mean.type.dtype),
         np.ones(32, dtype=running_var.type.dtype),
     ]
@@ -139,7 +139,7 @@ def test_batch_norm_2d_learns_population_stats():
 
     for t in range(500):
         data = np.random.normal(loc=3.2, scale=6.2, size=(100, 32)).astype(X.type.dtype)
-        X_norm_val, mean_val, var_val, loss_val, d_loss_d_gamma, d_loss_d_beta = f(*estimates, data)
+        X_norm_val, mean_val, var_val, loss_val, d_loss_d_loc, d_loss_d_scale = f(*estimates, data)
 
         np.testing.assert_allclose(
             X_norm_val,
@@ -149,8 +149,8 @@ def test_batch_norm_2d_learns_population_stats():
             atol=1e-6,
         )
 
-        estimates[0] -= learning_rate * d_loss_d_gamma
-        estimates[1] -= learning_rate * d_loss_d_beta
+        estimates[0] -= learning_rate * d_loss_d_loc
+        estimates[1] -= learning_rate * d_loss_d_scale
         estimates[2] = mean_val
         estimates[3] = var_val
 
@@ -161,7 +161,7 @@ def test_batch_norm_2d_learns_population_stats():
 
     # Check that after rewrite, the population statistics are used
     X_normalized = rewrite_for_prediction(X_normalized)
-    f = pytensor.function([beta, gamma, running_mean, running_var, X], X_normalized)
+    f = pytensor.function([loc, scale, running_mean, running_var, X], X_normalized)
     data = np.random.normal(loc=3.2, scale=6.2, size=(100, 32))
 
     np.testing.assert_allclose(

@@ -125,8 +125,8 @@ class BatchNorm2D(Layer):
         self.affine = affine
         self.track_running_stats = track_running_stats
 
-        self.beta = None
-        self.gamma = None
+        self.loc = None
+        self.scale = None
 
         self.running_mean = None
         self.running_var = None
@@ -139,8 +139,8 @@ class BatchNorm2D(Layer):
             return
 
         if self.n_in is None and X is None:
-            self.gamma = None
-            self.beta = None
+            self.scale = None
+            self.loc = None
             return
 
         if X is not None:
@@ -149,8 +149,8 @@ class BatchNorm2D(Layer):
             n_in = self.n_in
 
         if self.affine:
-            self.gamma = pt.tensor(f"{self.name}_gamma", shape=(n_in,))
-            self.beta = pt.tensor(f"{self.name}_beta", shape=(n_in,))
+            self.scale = pt.tensor(f"{self.name}_scale", shape=(n_in,))
+            self.loc = pt.tensor(f"{self.name}_loc", shape=(n_in,))
             self.initialized = True
 
         else:
@@ -168,8 +168,8 @@ class BatchNorm2D(Layer):
         X_normalized = (X - mu) / pt.sqrt(sigma_sq + self.epsilon)
 
         if self.affine:
-            X_rescaled = X_normalized * self.gamma + self.beta
-            inputs.extend([self.gamma, self.beta])
+            X_rescaled = X_normalized * self.scale + self.loc
+            inputs.extend([self.loc, self.scale])
 
         else:
             X_rescaled = X_normalized
