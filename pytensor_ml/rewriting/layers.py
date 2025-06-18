@@ -58,13 +58,13 @@ def rewrite_batch_stats_to_running_average_stats(
     X_normalized: Variable
 
     """
-    X, gamma, beta, running_mean, running_var = node.inputs
+    X, loc, scale, running_mean, running_var = node.inputs
 
     res = (X - running_mean) / pt.sqrt(running_var + node.op.epsilon)
-    res = res * gamma + beta
+    res = loc + res * scale
 
     batch_norm_op = PredictionBatchNormLayer(
-        inputs=[X, gamma, beta, running_mean, running_var],
+        inputs=[X, loc, scale, running_mean, running_var],
         outputs=[res],
         name=f"{node.op.name}",
         n_in=node.op.n_in,
@@ -73,7 +73,7 @@ def rewrite_batch_stats_to_running_average_stats(
         affine=node.op.affine,
     )
 
-    X_normalized = batch_norm_op(X, gamma, beta, running_mean, running_var)
+    X_normalized = batch_norm_op(X, loc, scale, running_mean, running_var)
 
     return [X_normalized, None, None]
 
