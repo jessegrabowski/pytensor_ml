@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-from pytensor.graph.basic import explicit_graph_inputs
 
 from scipy.special import softmax
 from sklearn.metrics import log_loss
@@ -37,8 +36,8 @@ def test_cross_entropy_onehot_vs_labels(reduction: Reductions, expect_logits):
     loss = loss_fn(y_pred)
     loss_onehot = loss_onehot_fn(y_pred)
 
-    loss_value = loss.eval({'y_true':y_true, 'y_pred': y_pred})
-    loss_value_onehot = loss_onehot.eval({'y_true':y_true_onehot, 'y_pred': y_pred})
+    loss_value = loss.eval({"y_true": y_true, "y_pred": y_pred})
+    loss_value_onehot = loss_onehot.eval({"y_true": y_true_onehot, "y_pred": y_pred})
 
     np.testing.assert_allclose(loss_value, loss_value_onehot)
 
@@ -53,8 +52,9 @@ def test_cross_entropy(reduction: Reductions, expect_logits, expect_onehot_label
 
     y_true, y_true_onehot, y_pred = generate_categorical_data(expect_logits)
     loss = loss_fn(y_pred)
-    loss_value = loss.eval({'y_true': y_true_onehot if expect_onehot_labels else y_true,
-                            'y_pred': y_pred})
+    loss_value = loss.eval(
+        {"y_true": y_true_onehot if expect_onehot_labels else y_true, "y_pred": y_pred}
+    )
 
     if expect_logits:
         y_pred = softmax(y_pred, axis=-1)

@@ -10,7 +10,6 @@ reduction_dict = {"mean": pt.mean, "sum": pt.sum}
 
 
 class Loss(ABC):
-
     @abstractmethod
     def loss(self, y_pred: pt.TensorVariable) -> pt.TensorVariable: ...
 
@@ -23,7 +22,7 @@ class SquaredError(Loss):
         self.reduction = reduction_dict[reduction]
 
     def loss(self, y_pred: pt.TensorVariable) -> pt.TensorVariable:
-        y_true = y_pred.type(name='y_true')
+        y_true = y_pred.type(name="y_true")
         return self.reduction((y_true - y_pred) ** 2)
 
 
@@ -68,14 +67,16 @@ class CrossEntropy(Loss):
         loss: Tensor variable
             Scalar loss value
         """
-        y_pred = as_tensor_variable(y_pred).type(name='y_pred')
+        y_pred = as_tensor_variable(y_pred).type(name="y_pred")
         if y_pred.ndim < 2:
-            raise ValueError("y_pred should have at least 2 dimensions, got {}".format(y_pred.ndim))
+            raise ValueError(f"y_pred should have at least 2 dimensions, got {y_pred.ndim}")
 
         # y_true will be either (*batch_size, n_classes) if expect_onehot_labels is True, or (*batch_size,) if False
-        y_true = pt.tensor('y_true',
-                           shape=y_pred.type.shape if self.expect_onehot_labels else y_pred.type.shape[:-1],
-                           dtype=y_pred.type.dtype if self.expect_onehot_labels else 'int64')
+        y_true = pt.tensor(
+            "y_true",
+            shape=y_pred.type.shape if self.expect_onehot_labels else y_pred.type.shape[:-1],
+            dtype=y_pred.type.dtype if self.expect_onehot_labels else "int64",
+        )
 
         if self.expect_logits:
             log_softmax = pt.special.log_softmax(y_pred, axis=-1)

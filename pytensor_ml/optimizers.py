@@ -57,7 +57,7 @@ class Optimizer(ABC):
         ndim_out: int = 1,
         optimizer_weights: list[TensorVariable] | None = None,
         random_state: Any | None = None,
-        **compile_kwargs
+        **compile_kwargs,
     ):
         self.rng = np.random.default_rng(random_state)
         self.model = model
@@ -93,9 +93,7 @@ class Optimizer(ABC):
         n_params = len(self.model.weights)
         return all_weights[:n_params], all_weights[n_params:]
 
-    def build_update_fn(self,
-                        loss,
-                        **compile_kwargs) -> Function:
+    def build_update_fn(self, loss, **compile_kwargs) -> Function:
         """
         Compile a function to update model weights
 
@@ -125,8 +123,12 @@ class Optimizer(ABC):
 
         # Typically this will just be the ground-truth labels (e.g. y_true), but in principle a user could pass
         # something quite complex.
-        loss_inputs = list(filterfalse(lambda inpt: inpt in [x, *weights, *optimizer_weights, *update_inputs],
-                                       explicit_graph_inputs(loss)))
+        loss_inputs = list(
+            filterfalse(
+                lambda inpt: inpt in [x, *weights, *optimizer_weights, *update_inputs],
+                explicit_graph_inputs(loss),
+            )
+        )
 
         all_weights = self.update_parameters(weights + optimizer_weights, loss)
 
@@ -135,7 +137,13 @@ class Optimizer(ABC):
         non_trainable_fn_inputs = [pytensor.In(w, mutable=True) for w in update_inputs]
 
         fn = function(
-            [x, *loss_inputs, *weights_fn_inputs, *optimizer_weights_fn_inputs, *non_trainable_fn_inputs],
+            [
+                x,
+                *loss_inputs,
+                *weights_fn_inputs,
+                *optimizer_weights_fn_inputs,
+                *non_trainable_fn_inputs,
+            ],
             [*all_weights, *update_outputs, loss],
             trust_input=True,
             **compile_kwargs,
@@ -244,7 +252,7 @@ class Adadelta(Optimizer):
         learning_rate: TensorLike = 1.0,
         rho: TensorLike = 0.9,
         epsilon: TensorLike = 1e-8,
-        **compile_kwargs
+        **compile_kwargs,
     ):
         self.learning_rate = learning_rate
         self.rho = rho
@@ -253,7 +261,9 @@ class Adadelta(Optimizer):
         u_weights = [param.type() for param in model.weights]
         v_weights = [param.type() for param in model.weights]
         optimizer_weights = u_weights + v_weights
-        super().__init__(model, loss, ndim_out=ndim_out, optimizer_weights=optimizer_weights, **compile_kwargs)
+        super().__init__(
+            model, loss, ndim_out=ndim_out, optimizer_weights=optimizer_weights, **compile_kwargs
+        )
 
     def update_parameters(
         self, weights: list[TensorVariable], loss: TensorVariable
@@ -290,7 +300,7 @@ class Adam(Optimizer):
         beta1: TensorLike = 0.9,
         beta2: TensorLike = 0.999,
         epsilon: TensorLike = 1e-8,
-        **compile_kwargs
+        **compile_kwargs,
     ):
         self.learning_rate = learning_rate
         self.beta1 = beta1
@@ -350,7 +360,7 @@ class AdamW(Optimizer):
         beta2: TensorLike = 0.999,
         epsilon: TensorLike = 1e-8,
         weight_decay: TensorLike = 0.01,
-        **compile_kwargs
+        **compile_kwargs,
     ):
         self.learning_rate = learning_rate
         self.beta1 = beta1
@@ -363,7 +373,9 @@ class AdamW(Optimizer):
         t = tensor("t", shape=(1,), dtype=config.floatX)
 
         optimizer_weights = m_weights + v_weights + [t]
-        super().__init__(model, loss, ndim_out=ndim_out, optimizer_weights=optimizer_weights, **compile_kwargs)
+        super().__init__(
+            model, loss, ndim_out=ndim_out, optimizer_weights=optimizer_weights, **compile_kwargs
+        )
 
     def update_parameters(
         self, weights: list[TensorVariable], loss: TensorVariable
