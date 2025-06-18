@@ -240,7 +240,6 @@ class Adadelta(Optimizer):
         rho: TensorLike = 0.9,
         epsilon: TensorLike = 1e-8,
     ):
-
         self.learning_rate = learning_rate
         self.rho = rho
         self.epsilon = epsilon
@@ -248,9 +247,7 @@ class Adadelta(Optimizer):
         u_weights = [param.type() for param in model.weights]
         v_weights = [param.type() for param in model.weights]
         optimizer_weights = u_weights + v_weights
-        super().__init__(
-            model, loss_fn, ndim_out=ndim_out, optimizer_weights=optimizer_weights
-        )
+        super().__init__(model, loss_fn, ndim_out=ndim_out, optimizer_weights=optimizer_weights)
 
     def update_parameters(
         self, weights: list[TensorVariable], loss: TensorVariable
@@ -266,9 +263,7 @@ class Adadelta(Optimizer):
 
         for param, d_loss_d_param, u, v in zip(weights, grads, u_weights, v_weights):
             new_v = v * self.rho + d_loss_d_param**2 * (1 - self.rho)
-            weight_update = (
-                sqrt(u + self.epsilon) / sqrt(new_v + self.epsilon)
-            ) * d_loss_d_param
+            weight_update = (sqrt(u + self.epsilon) / sqrt(new_v + self.epsilon)) * d_loss_d_param
             new_u = u * self.rho + weight_update**2 * (1 - self.rho)
 
             new_weights.append(param - self.learning_rate * weight_update)

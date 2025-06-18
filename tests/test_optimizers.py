@@ -26,7 +26,7 @@ from pytensor_ml.activations import LeakyReLU
 from pytensor_ml.layers import Linear, Sequential
 from pytensor_ml.loss import CrossEntropy, SquaredError
 from pytensor_ml.model import Model
-from pytensor_ml.optimizers import SGD, ADAGrad, Adam, Adadelta
+from pytensor_ml.optimizers import SGD, Adadelta, ADAGrad, Adam
 from pytensor_ml.util import DataLoader
 
 
