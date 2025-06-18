@@ -1,16 +1,12 @@
 """
 PyTorch's philosophy:
 
-These algorithms are
-`manually` validated by comparing to the paper and
-`systematically` validated by assuring that the loss
-goes the right direction when the optimizer has been applied.
+These algorithms are `manually` validated by comparing to the paper and `systematically` validated by assuring that the
+loss goes the right direction when the optimizer has been applied.
 
-So it means that they just eyeball the implementation and
-only test if the optimizer indeed makes the loss go down.
+So it means that they just eyeball the implementation and only test if the optimizer indeed makes the loss go down.
 
-For faster implementation such as foreach or fused, they
-numerically compare the value with the original for-loop
+For faster implementation such as foreach or fused, they numerically compare the value with the original for-loop
 implementation.
 
 We can reorganize structure later.
@@ -26,7 +22,7 @@ from pytensor_ml.activations import LeakyReLU
 from pytensor_ml.layers import Linear, Sequential
 from pytensor_ml.loss import CrossEntropy, SquaredError
 from pytensor_ml.model import Model
-from pytensor_ml.optimizers import SGD, Adadelta, ADAGrad, Adam
+from pytensor_ml.optimizers import SGD, Adadelta, ADAGrad, Adam, AdamW
 from pytensor_ml.util import DataLoader
 
 
@@ -169,4 +165,22 @@ def test_adadelta(model, loss_fn, data, request):
     dataloader = DataLoader(*data, batch_size=512)
 
     loss_history = training_loop(dataloader, optim, n_epochs=100)
+    assert loss_history[0] > loss_history[-1]
+
+
+@pytest.mark.parametrize(
+    "model, loss_fn, data",
+    [
+        ("classification_model", "classification_loss_fn", "classification_data"),
+        ("regression_model", "regression_loss_fn", "regression_data"),
+    ],
+    ids=["classification", "regression"],
+)
+def test_adamw(model, loss_fn, data, request):
+    model, loss_fn, data = map(request.getfixturevalue, [model, loss_fn, data])
+
+    optim = AdamW(model, loss_fn, ndim_out=2, learning_rate=1e-3)
+    dataloader = DataLoader(*data, batch_size=512)
+
+    loss_history = training_loop(dataloader, optim, n_epochs=10)
     assert loss_history[0] > loss_history[-1]
