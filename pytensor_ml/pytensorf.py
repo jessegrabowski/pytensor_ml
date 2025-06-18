@@ -76,6 +76,7 @@ def function(
     mode = get_mode(mode)
     opt_qry = mode.provided_optimizer.including("random_make_inplace")
     mode = Mode(linker=mode.linker, optimizer=opt_qry)
+
     pytensor_function = pytensor.function(
         inputs,
         outputs,

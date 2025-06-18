@@ -80,13 +80,15 @@ def regression_model(regression_data):
 
 
 @pytest.fixture()
-def classification_loss_fn():
-    return CrossEntropy(expect_onehot_labels=True, expect_logits=True, reduction="mean")
+def classification_loss(classification_model):
+    loss_fn = CrossEntropy(expect_onehot_labels=True, expect_logits=True, reduction="mean")
+    return loss_fn(classification_model.y)
 
 
 @pytest.fixture()
-def regression_loss_fn():
-    return SquaredError(reduction="mean")
+def regression_loss(regression_model):
+    loss_fn = SquaredError(reduction="mean")
+    return loss_fn(regression_model.y)
 
 
 def training_loop(dataloader, optimizer, n_epochs: int = 100):
@@ -100,16 +102,16 @@ def training_loop(dataloader, optimizer, n_epochs: int = 100):
 
 
 @pytest.mark.parametrize(
-    "model, loss_fn, data",
+    "model, loss, data",
     [
-        ("classification_model", "classification_loss_fn", "classification_data"),
-        ("regression_model", "regression_loss_fn", "regression_data"),
+        ("classification_model", "classification_loss", "classification_data"),
+        ("regression_model", "regression_loss", "regression_data"),
     ],
     ids=["classification", "regression"],
 )
-def test_sgd(model, loss_fn, data, request):
-    model, loss_fn, data = map(request.getfixturevalue, [model, loss_fn, data])
-    optim = SGD(model, loss_fn, ndim_out=2, learning_rate=1e-3)
+def test_sgd(model, loss, data, request):
+    model, loss, data = map(request.getfixturevalue, [model, loss, data])
+    optim = SGD(model, loss, ndim_out=2, learning_rate=1e-3)
     dataloader = DataLoader(*data, batch_size=512)
 
     loss_history = training_loop(dataloader, optim, n_epochs=100)
@@ -117,16 +119,16 @@ def test_sgd(model, loss_fn, data, request):
 
 
 @pytest.mark.parametrize(
-    "model, loss_fn, data",
+    "model, loss, data",
     [
-        ("classification_model", "classification_loss_fn", "classification_data"),
-        ("regression_model", "regression_loss_fn", "regression_data"),
+        ("classification_model", "classification_loss", "classification_data"),
+        ("regression_model", "regression_loss", "regression_data"),
     ],
     ids=["classification", "regression"],
 )
-def test_adagrad(model, loss_fn, data, request):
-    model, loss_fn, data = map(request.getfixturevalue, [model, loss_fn, data])
-    optim = ADAGrad(model, loss_fn, ndim_out=2, learning_rate=1e-3)
+def test_adagrad(model, loss, data, request):
+    model, loss, data = map(request.getfixturevalue, [model, loss, data])
+    optim = ADAGrad(model, loss, ndim_out=2, learning_rate=1e-3)
     dataloader = DataLoader(*data, batch_size=512)
 
     loss_history = training_loop(dataloader, optim, n_epochs=100)
@@ -134,17 +136,17 @@ def test_adagrad(model, loss_fn, data, request):
 
 
 @pytest.mark.parametrize(
-    "model, loss_fn, data",
+    "model, loss, data",
     [
-        ("classification_model", "classification_loss_fn", "classification_data"),
-        ("regression_model", "regression_loss_fn", "regression_data"),
+        ("classification_model", "classification_loss", "classification_data"),
+        ("regression_model", "regression_loss", "regression_data"),
     ],
     ids=["classification", "regression"],
 )
-def test_adam(model, loss_fn, data, request):
-    model, loss_fn, data = map(request.getfixturevalue, [model, loss_fn, data])
+def test_adam(model, loss, data, request):
+    model, loss, data = map(request.getfixturevalue, [model, loss, data])
 
-    optim = Adam(model, loss_fn, ndim_out=2, learning_rate=1e-3)
+    optim = Adam(model, loss, ndim_out=2, learning_rate=1e-3)
     dataloader = DataLoader(*data, batch_size=512)
 
     loss_history = training_loop(dataloader, optim, n_epochs=10)
@@ -152,16 +154,16 @@ def test_adam(model, loss_fn, data, request):
 
 
 @pytest.mark.parametrize(
-    "model, loss_fn, data",
+    "model, loss, data",
     [
-        ("classification_model", "classification_loss_fn", "classification_data"),
-        ("regression_model", "regression_loss_fn", "regression_data"),
+        ("classification_model", "classification_loss", "classification_data"),
+        ("regression_model", "regression_loss", "regression_data"),
     ],
     ids=["classification", "regression"],
 )
-def test_adadelta(model, loss_fn, data, request):
-    model, loss_fn, data = map(request.getfixturevalue, [model, loss_fn, data])
-    optim = Adadelta(model, loss_fn, ndim_out=2, learning_rate=1.0)
+def test_adadelta(model, loss, data, request):
+    model, loss, data = map(request.getfixturevalue, [model, loss, data])
+    optim = Adadelta(model, loss, ndim_out=2, learning_rate=1.0)
     dataloader = DataLoader(*data, batch_size=512)
 
     loss_history = training_loop(dataloader, optim, n_epochs=100)
@@ -169,17 +171,17 @@ def test_adadelta(model, loss_fn, data, request):
 
 
 @pytest.mark.parametrize(
-    "model, loss_fn, data",
+    "model, loss, data",
     [
-        ("classification_model", "classification_loss_fn", "classification_data"),
-        ("regression_model", "regression_loss_fn", "regression_data"),
+        ("classification_model", "classification_loss", "classification_data"),
+        ("regression_model", "regression_loss", "regression_data"),
     ],
     ids=["classification", "regression"],
 )
-def test_adamw(model, loss_fn, data, request):
-    model, loss_fn, data = map(request.getfixturevalue, [model, loss_fn, data])
+def test_adamw(model, loss, data, request):
+    model, loss, data = map(request.getfixturevalue, [model, loss, data])
 
-    optim = AdamW(model, loss_fn, ndim_out=2, learning_rate=1e-3)
+    optim = AdamW(model, loss, ndim_out=2, learning_rate=1e-3)
     dataloader = DataLoader(*data, batch_size=512)
 
     loss_history = training_loop(dataloader, optim, n_epochs=10)
