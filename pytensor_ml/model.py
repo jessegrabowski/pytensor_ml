@@ -1,28 +1,19 @@
-from collections.abc import Generator
 from functools import partial
 from typing import Any, Literal, cast
 
 import numpy as np
 
 from pytensor import config
-from pytensor.compile.sharedvalue import SharedVariable
-from pytensor.graph import graph_inputs
-from pytensor.graph.basic import Constant
-from pytensor.graph.traversal import ancestors
 from pytensor.printing import debugprint
 from pytensor.tensor import TensorVariable
 
-from pytensor_ml.pytensorf import LayerOp, function, rewrite_for_prediction
+from pytensor_ml.params import (
+    collect_non_trainable_updates,
+    collect_trainable_params,
+)
+from pytensor_ml.pytensorf import function, rewrite_for_prediction
 
 InitializationSchemes = Literal["zeros", "xavier_uniform", "xavier_normal"]
-
-
-def required_graph_inputs(tensor: TensorVariable) -> Generator[TensorVariable, None, None]:
-    return (
-        cast(TensorVariable, var)
-        for var in graph_inputs([tensor])
-        if not isinstance(var, Constant | SharedVariable)
-    )
 
 
 class Model:
@@ -62,30 +53,13 @@ class Model:
 
     @property
     def weights(self) -> list[TensorVariable]:
-        not_trainable = {self.X}
-        for ancestor in ancestors([self.y]):
-            node = ancestor.owner
-            if node is not None and isinstance(node.op, LayerOp):
-                for input_idx in node.op.update_map().values():
-                    not_trainable.add(node.inputs[input_idx])
-
-        return [var for var in required_graph_inputs(self.y) if var not in not_trainable]
+        return collect_trainable_params(self.y, exclude={self.X})
 
     @property
     def updates(self) -> tuple[list[TensorVariable], list[TensorVariable]]:
-        updates = {}
-        for ancestor in ancestors([self.y]):
-            node = ancestor.owner
-            if node is not None and isinstance(node.op, LayerOp):
-                for output_idx, input_idx in node.op.update_map().items():
-                    new_value = node.outputs[output_idx]
-                    old_value = node.inputs[input_idx]
-                    assert old_value.type.dtype == new_value.type.dtype
-                    updates[old_value] = new_value
-
-        if updates:
-            return list(updates.keys()), list(updates.values())
-
+        update_dict = collect_non_trainable_updates(self.y)
+        if update_dict:
+            return list(update_dict.keys()), list(update_dict.values())
         return [], []
 
     @property
