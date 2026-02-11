@@ -1,8 +1,8 @@
 import pytensor.tensor as pt
 import pytest
 
-from pytensor.graph.basic import explicit_graph_inputs
 from pytensor.graph.fg import FunctionGraph
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pytensor_ml.layers import (
     BatchNorm2D,
