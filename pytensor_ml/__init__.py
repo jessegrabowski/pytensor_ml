@@ -1,7 +1,7 @@
 import logging
 import sys
 
-from pytensor_ml._version import get_versions
+from pytensor_ml._version import __version__
 from pytensor_ml.pytensorf import function
 
 _log = logging.getLogger(__name__)
@@ -13,6 +13,4 @@ if not logging.root.handlers:
         _log.addHandler(handler)
 
 
-__version__ = get_versions()["version"]
-
-__all__ = ["function"]
+__all__ = ["__version__", "function"]
