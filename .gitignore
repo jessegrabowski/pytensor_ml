@@ -49,6 +49,7 @@ core
 .vs
 .mypy_cache/
 /htmlcov/
+pytensor_ml/_version.py
 
 pytensor-venv/
 /notebooks/Sandbox*

@@ -1,8 +1,3 @@
-# To use:
-#
-#   $ conda env create -f conda_envs/pytensor_ml.yml  # `mamba` works too for this command
-#   $ conda activate pytensor-dev
-#
 name: pytensor_ml
 channels:
   - conda-forge

@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools", "versioneer[toml]"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 
 [project]
 name = "pytensor_ml"
-dynamic = ['version']
+dynamic = ["version"]
 description = "A(nother) deep learning library, built on top of Pytensor"
 authors = [{name="Jesse Grabowski", email='jessegrabowski@gmail.com'}, {name="Ricardo Vieira"}]
 license = { file = "LICENSE" }
@@ -19,9 +19,8 @@ classifiers = [
   "Operating System :: Unix",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 keywords = [
   "neural network",
@@ -42,16 +41,14 @@ dev = [
     "pre-commit",
     "pytest",
     "pytest-cov",
-    "versioneer",
     "scikit-learn"
 ]
 
-[tool.versioneer]
-VCS = "git"
-style = "pep440"
-versionfile_source = "pytensor_ml/_version.py"
-versionfile_build = "pytensor_ml/_version.py"
-tag_prefix = 'v'
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "pytensor_ml/_version.py"
 
 
 [tool.pytest.ini_options]
