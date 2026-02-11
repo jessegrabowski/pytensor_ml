@@ -32,7 +32,7 @@ keywords = [
 ]
 
 dependencies = [
-  "pytensor",
+  "pytensor>=2.37.0",
   "numpy",
   "pymc"
 ]
@@ -59,8 +59,8 @@ minversion = "6.0"
 xfail_strict=true
 filterwarnings = [
     "error",
-    "ignore::DeprecationWarning",
-    "ignore::RuntimeWarning"]
+    'ignore:\nArviZ is undergoing a major refactor.*:FutureWarning',
+]
 
 [tool.ruff]
 line-length = 100

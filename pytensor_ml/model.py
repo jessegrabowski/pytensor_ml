@@ -7,7 +7,8 @@ import numpy as np
 from pytensor import config
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import graph_inputs
-from pytensor.graph.basic import Constant, ancestors
+from pytensor.graph.basic import Constant
+from pytensor.graph.traversal import ancestors
 from pytensor.printing import debugprint
 from pytensor.tensor import TensorVariable
 

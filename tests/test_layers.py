@@ -3,7 +3,7 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pytensor_ml.layers import BatchNorm2D, Dropout, Linear, Sequential
 from pytensor_ml.pytensorf import rewrite_for_prediction
@@ -56,7 +56,7 @@ def test_sequential(rng):
     W2_np = rng.normal(size=(3, 1)).astype(floatX)
     b2_np = rng.normal(size=(1,)).astype(floatX)
 
-    f = pytensor.function(list(explicit_graph_inputs(out)), out)
+    f = pytensor.function(list(explicit_graph_inputs(out))[::-1], out)
     res = f(X_np, W1_np, b1_np, W2_np, b2_np)
 
     np.testing.assert_allclose(res, (X_np @ W1_np + b1_np) @ W2_np + b2_np)
