@@ -1,8 +1,8 @@
 import pytensor.tensor as pt
 import pytest
 
+from pytensor.graph import graph_inputs
 from pytensor.graph.fg import FunctionGraph
-from pytensor.graph.traversal import explicit_graph_inputs
 
 from pytensor_ml.layers import (
     BatchNorm2D,
@@ -24,8 +24,6 @@ def feature_extractor_and_rng():
         Linear("Layer_1", n_in=6, n_out=3), d1, Linear("Layer_2", n_in=3, n_out=1), d2
     )
 
-    # These won't be found by explicit_graph_inputs, but we need them as inputs to the fgraph later, so carry them
-    # along
     rngs = [d1.rng, d2.rng]
 
     return feature_extractor, rngs
@@ -37,7 +35,8 @@ def test_remove_dropout(feature_extractor_and_rng):
     X = pt.tensor("X", shape=(None, 6))
     latent = feature_extractor(X)
 
-    fg = FunctionGraph(inputs=list(explicit_graph_inputs(latent)) + rngs, outputs=[latent])
+    # Include all graph inputs including SharedVariables
+    fg = FunctionGraph(inputs=list(graph_inputs([latent])) + rngs, outputs=[latent])
 
     assert len([node.op for node in fg.apply_nodes if isinstance(node.op, DropoutLayer)]) == 2
     fg = rewrite_for_prediction(fg)
@@ -50,13 +49,11 @@ def test_rewrite_batch_stats_to_running_average_stats():
     X = pt.tensor("X", shape=(None, 6))
     latent = feature_extractor(X)
 
-    fg = FunctionGraph(inputs=list(explicit_graph_inputs(latent)), outputs=[latent])
+    # Include all graph inputs including SharedVariables
+    fg = FunctionGraph(inputs=list(graph_inputs([latent])), outputs=[latent])
     assert len([node.op for node in fg.apply_nodes if isinstance(node.op, BatchNormLayer)]) == 1
 
     fg = rewrite_for_prediction(fg)
-
-    for node in fg.apply_nodes:
-        print(node, type(node.op))
 
     assert not any(isinstance(node.op, BatchNormLayer) for node in fg.apply_nodes)
     assert (

@@ -1,50 +1,17 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from functools import wraps
-from typing import Any
 
 import numpy as np
-import pytensor
 import pytensor.tensor as pt
 
 from pytensor import config
 from pytensor.compile.function.types import Function
 from pytensor.gradient import grad
-from pytensor.tensor import TensorLike, TensorVariable, sqrt, tensor
+from pytensor.tensor import TensorLike, TensorVariable, sqrt
 
 from pytensor_ml.model import Model
+from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import function, rewrite_pregrad
-
-
-def split_output_wrapper(fn: Callable, *splits) -> Callable:
-    """
-    Wraps a function to return the weights and optimizer weights separately.
-
-    Parameters
-    ----------
-    fn: Function
-        The function to wrap.
-    splits: int
-
-    Returns
-    -------
-    Function
-        A wrapped function that returns the model weights and optimizer weights separately.
-    """
-    splits = np.cumsum(splits)
-
-    @wraps(fn)
-    def wrapped_fn(*args, **kwargs):
-        result = fn(*args, **kwargs)
-        output = []
-        cursor = 0
-        for split in splits:
-            output.append(result[cursor:split])
-            cursor = split
-        output.append(result[cursor:])
-        return output
-
-    return wrapped_fn
 
 
 class Optimizer(ABC):
@@ -55,36 +22,16 @@ class Optimizer(ABC):
         ndim_out: int = 1,
         optimizer_weights: list[TensorVariable] | None = None,
         compile_kwargs: dict | None = None,
-        random_state: Any | None = None,
     ):
-        self.rng = np.random.default_rng(random_state)
         self.model = model
         self.loss_fn = loss_fn
         self.ndim_out = ndim_out
         self.optimizer_weights = optimizer_weights if optimizer_weights is not None else []
-        self._optimizer_weights_values = self._initialize_weights()
 
         self.update_fn = self.build_update_fn(compile_kwargs)
 
     @abstractmethod
     def update_parameters(self, params: Sequence[TensorVariable], loss: TensorVariable): ...
-
-    @property
-    def optimizer_weights_values(self) -> list[np.ndarray]:
-        return self._optimizer_weights_values
-
-    @optimizer_weights_values.setter
-    def optimizer_weights_values(self, values: list[np.ndarray]):
-        for i, new_value in enumerate(values):
-            self._optimizer_weights_values[i][:] = new_value
-
-    def _initialize_weights(self) -> list[np.ndarray]:
-        if self.optimizer_weights:
-            return [
-                np.zeros(param.type.shape, dtype=param.type.dtype)
-                for param in self.optimizer_weights
-            ]
-        return []
 
     def _split_weights(
         self, all_weights: list[TensorLike]
@@ -96,9 +43,8 @@ class Optimizer(ABC):
         """
         Compile a function to update model weights
 
-        Compile a pytensor function that maps data (x), targets (y), and current parameter values to new parameter
-        values. By default, the functions also returns the loss value. To return additional diagnostics, this method
-        should be overloaded.
+        Compile a pytensor function that maps data (x), targets (y) to loss, updating
+        all SharedVariables (weights, optimizer state, non-trainable state) in place.
 
         Parameters
         ----------
@@ -108,7 +54,7 @@ class Optimizer(ABC):
         Returns
         -------
         update_fn: Function
-            A function that updates the model weights given a batch of data, targets, and current weights.
+            A function that updates the model weights given a batch of data and targets.
         """
         compile_kwargs = compile_kwargs if compile_kwargs else {}
         x, y_hat = self.model.X, self.model.y
@@ -118,25 +64,35 @@ class Optimizer(ABC):
 
         weights = self.model.weights
         optimizer_weights = self.optimizer_weights
-        update_inputs, update_outputs = self.model.updates
 
         loss = self.loss_fn(y, y_hat)
         loss = rewrite_pregrad(loss)
 
-        all_weights = self.update_parameters(weights + optimizer_weights, loss)
+        # Get new weight values from the optimizer
+        new_all_weights = self.update_parameters(weights + optimizer_weights, loss)
+        new_weights = new_all_weights[: len(weights)]
+        new_optimizer_weights = new_all_weights[len(weights) :]
 
-        weights_fn_inputs = [pytensor.In(w, mutable=True) for w in self.model.weights]
-        optimizer_weights_fn_inputs = [pytensor.In(w, mutable=True) for w in self.optimizer_weights]
-        non_trainable_fn_inputs = [pytensor.In(w, mutable=True) for w in update_inputs]
+        # Build updates dict: old_shared -> new_value
+        updates = {}
+        for old, new in zip(weights, new_weights):
+            updates[old] = new
+        for old, new in zip(optimizer_weights, new_optimizer_weights):
+            updates[old] = new
+
+        # Add non-trainable updates (e.g., BatchNorm running stats)
+        non_trainable_updates = self.model.updates
+        updates.update(non_trainable_updates)
 
         fn = function(
-            [x, y, *weights_fn_inputs, *optimizer_weights_fn_inputs, *non_trainable_fn_inputs],
-            [*all_weights, *update_outputs, loss],
+            [x, y],
+            [loss],
+            updates=updates,
             trust_input=True,
             **compile_kwargs,
         )
 
-        return split_output_wrapper(fn, len(weights), len(optimizer_weights), len(update_outputs))
+        return fn
 
     def step(self, x_values, y_values) -> np.ndarray:
         """
@@ -146,20 +102,7 @@ class Optimizer(ABC):
         -------
         loss
         """
-
-        new_weights, new_optimizer_weights, new_non_trainable_values, loss_values = self.update_fn(
-            x_values,
-            y_values,
-            *self.model.weight_values,
-            *self.optimizer_weights_values,
-            *self.model.non_trainable_values,
-        )
-
-        self.model.weight_values = new_weights
-        self.model.non_trainable_values = new_non_trainable_values
-
-        self.optimizer_weights_values = new_optimizer_weights
-
+        (loss_values,) = self.update_fn(x_values, y_values)
         return loss_values
 
 
@@ -200,7 +143,10 @@ class ADAGrad(Optimizer):
     ):
         self.learning_rate = learning_rate
         self.epsilon = epsilon
-        g2_weights = [param.type() for param in model.weights]
+        g2_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_g2")
+            for param in model.weights
+        ]
 
         super().__init__(
             model,
@@ -239,15 +185,28 @@ class Adadelta(Optimizer):
         learning_rate: TensorLike = 1.0,
         rho: TensorLike = 0.9,
         epsilon: TensorLike = 1e-8,
+        compile_kwargs: dict | None = None,
     ):
         self.learning_rate = learning_rate
         self.rho = rho
         self.epsilon = epsilon
 
-        u_weights = [param.type() for param in model.weights]
-        v_weights = [param.type() for param in model.weights]
+        u_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_u")
+            for param in model.weights
+        ]
+        v_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_v")
+            for param in model.weights
+        ]
         optimizer_weights = u_weights + v_weights
-        super().__init__(model, loss_fn, ndim_out=ndim_out, optimizer_weights=optimizer_weights)
+        super().__init__(
+            model,
+            loss_fn,
+            ndim_out=ndim_out,
+            optimizer_weights=optimizer_weights,
+            compile_kwargs=compile_kwargs,
+        )
 
     def update_parameters(
         self, weights: list[TensorVariable], loss: TensorVariable
@@ -291,9 +250,15 @@ class Adam(Optimizer):
         self.beta2 = beta2
         self.epsilon = epsilon
 
-        m_weights = [param.type() for param in model.weights]
-        v_weights = [param.type() for param in model.weights]
-        t = tensor("t", shape=(1,), dtype=config.floatX)
+        m_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_m")
+            for param in model.weights
+        ]
+        v_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_v")
+            for param in model.weights
+        ]
+        t = trainable(np.zeros(1, dtype=config.floatX), name="t")
 
         optimizer_weights = m_weights + v_weights + [t]
         super().__init__(
@@ -344,6 +309,7 @@ class AdamW(Optimizer):
         beta2: TensorLike = 0.999,
         epsilon: TensorLike = 1e-8,
         weight_decay: TensorLike = 0.01,
+        compile_kwargs: dict | None = None,
     ):
         self.learning_rate = learning_rate
         self.beta1 = beta1
@@ -351,12 +317,24 @@ class AdamW(Optimizer):
         self.epsilon = epsilon
         self.weight_decay = weight_decay
 
-        m_weights = [param.type() for param in model.weights]
-        v_weights = [param.type() for param in model.weights]
-        t = tensor("t", shape=(1,), dtype=config.floatX)
+        m_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_m")
+            for param in model.weights
+        ]
+        v_weights = [
+            trainable(np.zeros_like(param.get_value()), name=f"{param.name}_v")
+            for param in model.weights
+        ]
+        t = trainable(np.zeros(1, dtype=config.floatX), name="t")
 
         optimizer_weights = m_weights + v_weights + [t]
-        super().__init__(model, loss_fn, ndim_out=ndim_out, optimizer_weights=optimizer_weights)
+        super().__init__(
+            model,
+            loss_fn,
+            ndim_out=ndim_out,
+            optimizer_weights=optimizer_weights,
+            compile_kwargs=compile_kwargs,
+        )
 
     def update_parameters(
         self, weights: list[TensorVariable], loss: TensorVariable
