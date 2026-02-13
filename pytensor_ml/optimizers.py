@@ -10,7 +10,7 @@ from pytensor.gradient import grad
 from pytensor.tensor import TensorLike, TensorVariable, sqrt
 
 from pytensor_ml.model import Model
-from pytensor_ml.params import trainable
+from pytensor_ml.params import non_trainable, trainable
 from pytensor_ml.pytensorf import function, rewrite_pregrad
 
 
@@ -258,7 +258,7 @@ class Adam(Optimizer):
             trainable(np.zeros_like(param.get_value()), name=f"{param.name}_v")
             for param in model.weights
         ]
-        t = trainable(np.zeros(1, dtype=config.floatX), name="t")
+        t = non_trainable(np.array(0, dtype=config.floatX), name="t")
 
         optimizer_weights = m_weights + v_weights + [t]
         super().__init__(
@@ -325,7 +325,7 @@ class AdamW(Optimizer):
             trainable(np.zeros_like(param.get_value()), name=f"{param.name}_v")
             for param in model.weights
         ]
-        t = trainable(np.zeros(1, dtype=config.floatX), name="t")
+        t = non_trainable(np.array(0, dtype=config.floatX), name="t")
 
         optimizer_weights = m_weights + v_weights + [t]
         super().__init__(
