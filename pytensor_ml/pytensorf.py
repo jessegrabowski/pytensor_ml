@@ -112,4 +112,4 @@ def rewrite_for_prediction(graph):
     return fgraph.outputs
 
 
-__all__ = ["function"]
+__all__ = ["function", "rewrite_for_prediction", "rewrite_pregrad"]

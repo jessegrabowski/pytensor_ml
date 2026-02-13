@@ -1,17 +1,3 @@
-"""
-PyTorch's philosophy:
-
-These algorithms are `manually` validated by comparing to the paper and `systematically` validated by assuring that the
-loss goes the right direction when the optimizer has been applied.
-
-So it means that they just eyeball the implementation and only test if the optimizer indeed makes the loss go down.
-
-For faster implementation such as foreach or fused, they numerically compare the value with the original for-loop
-implementation.
-
-We can reorganize structure later.
-"""
-
 import pytensor
 import pytest
 
@@ -56,7 +42,7 @@ def classification_model(classification_data):
 
     y_hat = prediction_network(X_in)
     model = Model(X_in, y_hat)
-    model.initialize_weights()
+    model.initialize()
 
     return model
 
@@ -74,7 +60,7 @@ def regression_model(regression_data):
 
     y_hat = prediction_network(X_in)
     model = Model(X_in, y_hat)
-    model.initialize_weights()
+    model.initialize()
 
     return model
 

@@ -3,8 +3,6 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from pytensor.graph.traversal import explicit_graph_inputs
-
 from pytensor_ml.layers import BatchNorm2D, Dropout, Linear, Sequential
 from pytensor_ml.pytensorf import rewrite_for_prediction
 
@@ -36,15 +34,19 @@ def test_linear_layer(bias, rng):
     W_np = rng.normal(size=(6, 3)).astype(floatX)
     b_np = rng.normal(size=(3,)).astype(floatX)
 
-    res = out.eval({X: X_np, **dict(zip(weights, [W_np, b_np], strict=False))})
+    linear.W.set_value(W_np)
+    if bias:
+        linear.b.set_value(b_np)
+
+    res = out.eval({X: X_np})
     expected = X_np @ W_np + b_np if bias else X_np @ W_np
     np.testing.assert_allclose(res, expected)
 
 
 def test_sequential(rng):
-    mlp = Sequential(
-        Linear(name="Linear_1", n_in=6, n_out=3), Linear(name="Linear_2", n_in=3, n_out=1)
-    )
+    linear1 = Linear(name="Linear_1", n_in=6, n_out=3)
+    linear2 = Linear(name="Linear_2", n_in=3, n_out=1)
+    mlp = Sequential(linear1, linear2)
 
     X = pt.tensor("X", shape=(None, 6))
     out = mlp(X)
@@ -56,8 +58,14 @@ def test_sequential(rng):
     W2_np = rng.normal(size=(3, 1)).astype(floatX)
     b2_np = rng.normal(size=(1,)).astype(floatX)
 
-    f = pytensor.function(list(explicit_graph_inputs(out))[::-1], out)
-    res = f(X_np, W1_np, b1_np, W2_np, b2_np)
+    # Set SharedVariable values directly
+    linear1.W.set_value(W1_np)
+    linear1.b.set_value(b1_np)
+    linear2.W.set_value(W2_np)
+    linear2.b.set_value(b2_np)
+
+    f = pytensor.function([X], out)
+    res = f(X_np)
 
     np.testing.assert_allclose(res, (X_np @ W1_np + b1_np) @ W2_np + b2_np)
 
@@ -99,15 +107,12 @@ def test_batch_norm_2d_forward(n_in, rng):
     mean_np = np.mean(X_np, axis=0)
     var_np = np.var(X_np, axis=0)
 
-    res = out.eval(
-        {
-            X: X_np,
-            batch_norm.scale: gamma_np,
-            batch_norm.loc: beta_np,
-            batch_norm.running_mean: np.zeros_like(mean_np),
-            batch_norm.running_var: np.zeros_like(var_np),
-        }
-    )
+    batch_norm.scale.set_value(gamma_np)
+    batch_norm.loc.set_value(beta_np)
+    batch_norm.running_mean.set_value(np.zeros_like(mean_np))
+    batch_norm.running_var.set_value(np.zeros_like(var_np))
+
+    res = out.eval({X: X_np})
     expected = (X_np - mean_np) / np.sqrt(var_np + batch_norm.epsilon)
     expected = expected * gamma_np + beta_np
 
@@ -119,54 +124,59 @@ def test_batch_norm_2d_learns_population_stats():
     batch_norm = BatchNorm2D(name="BatchNorm_1", n_in=32, momentum=0.05, epsilon=1e-8)
     X_normalized = batch_norm(X)
 
-    _, loc, scale, running_mean, running_var = X_normalized.owner.inputs
     _, new_running_mean, new_running_var = X_normalized.owner.outputs
 
     loss = pt.square(X_normalized - X).mean()
-    d_loss = pt.grad(loss, [loc, scale])
-    f = pytensor.function(
-        [loc, scale, running_mean, running_var, X],
-        [X_normalized, new_running_mean, new_running_var, loss, *d_loss],
-    )
+    d_loss = pt.grad(loss, [batch_norm.loc, batch_norm.scale])
 
-    estimates = [
-        np.zeros(32, dtype=loc.type.dtype),
-        np.zeros(32, dtype=scale.type.dtype),
-        np.zeros(32, dtype=running_mean.type.dtype),
-        np.ones(32, dtype=running_var.type.dtype),
-    ]
     learning_rate = 1e-1
+    updates = {
+        batch_norm.loc: batch_norm.loc - learning_rate * d_loss[0],
+        batch_norm.scale: batch_norm.scale - learning_rate * d_loss[1],
+        batch_norm.running_mean: new_running_mean,
+        batch_norm.running_var: new_running_var,
+    }
+
+    f = pytensor.function([X], [X_normalized, loss], updates=updates)
+
+    batch_norm.loc.set_value(np.zeros(32, dtype=batch_norm.loc.type.dtype))
+    batch_norm.scale.set_value(np.ones(32, dtype=batch_norm.scale.type.dtype))
+    batch_norm.running_mean.set_value(np.zeros(32, dtype=batch_norm.running_mean.type.dtype))
+    batch_norm.running_var.set_value(np.ones(32, dtype=batch_norm.running_var.type.dtype))
 
     for t in range(500):
         data = np.random.normal(loc=3.2, scale=6.2, size=(100, 32)).astype(X.type.dtype)
-        X_norm_val, mean_val, var_val, loss_val, d_loss_d_loc, d_loss_d_scale = f(*estimates, data)
+
+        loc_val = batch_norm.loc.get_value()
+        scale_val = batch_norm.scale.get_value()
+
+        X_norm_val, loss_val = f(data)
 
         np.testing.assert_allclose(
             X_norm_val,
-            (data - data.mean(axis=0)) / np.sqrt(data.var(axis=0) + 1e-8) * estimates[1]
-            + estimates[0],
+            (data - data.mean(axis=0)) / np.sqrt(data.var(axis=0) + 1e-8) * scale_val + loc_val,
             rtol=1e-4,
             atol=1e-6,
         )
 
-        estimates[0] -= learning_rate * d_loss_d_loc
-        estimates[1] -= learning_rate * d_loss_d_scale
-        estimates[2] = mean_val
-        estimates[3] = var_val
+    loc_val = batch_norm.loc.get_value()
+    scale_val = batch_norm.scale.get_value()
+    running_mean_val = batch_norm.running_mean.get_value()
+    running_var_val = batch_norm.running_var.get_value()
 
-    np.testing.assert_allclose(estimates[0], 3.2, rtol=1e-1, atol=1e-1)
-    np.testing.assert_allclose(estimates[1], 6.2, rtol=1e-1, atol=1e-1)
-    np.testing.assert_allclose(estimates[2], 3.2, rtol=1e-1, atol=1e-1)
-    np.testing.assert_allclose(np.sqrt(estimates[3]), 6.2, rtol=1e-1, atol=1e-1)
+    np.testing.assert_allclose(loc_val, 3.2, rtol=1e-1, atol=1e-1)
+    np.testing.assert_allclose(scale_val, 6.2, rtol=1e-1, atol=1e-1)
+    np.testing.assert_allclose(running_mean_val, 3.2, rtol=1e-1, atol=1e-1)
+    np.testing.assert_allclose(np.sqrt(running_var_val), 6.2, rtol=1e-1, atol=1e-1)
 
     # Check that after rewrite, the population statistics are used
-    X_normalized = rewrite_for_prediction(X_normalized)
-    f = pytensor.function([loc, scale, running_mean, running_var, X], X_normalized)
-    data = np.random.normal(loc=3.2, scale=6.2, size=(100, 32))
+    X_normalized_pred = rewrite_for_prediction(X_normalized)
+    f_pred = pytensor.function([X], X_normalized_pred)
+    data = np.random.normal(loc=3.2, scale=6.2, size=(100, 32)).astype(X.type.dtype)
 
     np.testing.assert_allclose(
-        f(*estimates, data),
-        (data - estimates[2]) / np.sqrt(estimates[3] + 1e-8) * estimates[1] + estimates[0],
+        f_pred(data),
+        (data - running_mean_val) / np.sqrt(running_var_val + 1e-8) * scale_val + loc_val,
         rtol=1e-6,
         atol=1e-6,
     )

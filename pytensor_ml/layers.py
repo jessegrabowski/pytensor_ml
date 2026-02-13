@@ -9,6 +9,7 @@ import pytensor.tensor.random as ptr
 from pytensor import config
 from pytensor.compile.sharedvalue import shared
 
+from pytensor_ml.params import non_trainable, trainable
 from pytensor_ml.pytensorf import LayerOp
 
 
@@ -32,10 +33,12 @@ class Linear(Layer):
         self.n_out = n_out
         self.bias = bias
 
-        self.W = pt.tensor(f"{self.name}_W", shape=(n_in, self.n_out))
+        W_value = np.zeros((n_in, n_out), dtype=config.floatX)
+        self.W = trainable(W_value, f"{self.name}_W")
 
         if self.bias:
-            self.b = pt.tensor(f"{self.name}_b", shape=(self.n_out,))
+            b_value = np.zeros(n_out, dtype=config.floatX)
+            self.b = trainable(b_value, f"{self.name}_b")
 
     def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
         X = pt.as_tensor(X)
@@ -125,9 +128,8 @@ class BatchNorm2D(Layer):
         self.affine = affine
         self.track_running_stats = track_running_stats
 
-        self.loc = None
         self.scale = None
-
+        self.loc = None
         self.running_mean = None
         self.running_var = None
 
@@ -139,8 +141,6 @@ class BatchNorm2D(Layer):
             return
 
         if self.n_in is None and X is None:
-            self.scale = None
-            self.loc = None
             return
 
         if X is not None:
@@ -149,12 +149,18 @@ class BatchNorm2D(Layer):
             n_in = self.n_in
 
         if self.affine:
-            self.scale = pt.tensor(f"{self.name}_scale", shape=(n_in,))
-            self.loc = pt.tensor(f"{self.name}_loc", shape=(n_in,))
-            self.initialized = True
+            scale_value = np.ones(n_in, dtype=config.floatX)
+            loc_value = np.zeros(n_in, dtype=config.floatX)
+            self.scale = trainable(scale_value, f"{self.name}_scale")
+            self.loc = trainable(loc_value, f"{self.name}_loc")
 
-        else:
-            self.initialized = True
+        if self.track_running_stats:
+            running_mean_value = np.zeros(n_in, dtype=config.floatX)
+            running_var_value = np.ones(n_in, dtype=config.floatX)
+            self.running_mean = non_trainable(running_mean_value, f"{self.name}_running_mean")
+            self.running_var = non_trainable(running_var_value, f"{self.name}_running_var")
+
+        self.initialized = True
 
     def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
         X = pt.as_tensor(X)
@@ -170,14 +176,10 @@ class BatchNorm2D(Layer):
         if self.affine:
             X_rescaled = X_normalized * self.scale + self.loc
             inputs.extend([self.loc, self.scale])
-
         else:
             X_rescaled = X_normalized
 
         if self.track_running_stats:
-            self.running_mean = mu.type(name=f"{self.name}_running_mean")
-            self.running_var = sigma_sq.type(name=f"{self.name}_running_var")
-
             new_running_mean = self.momentum * mu + (1 - self.momentum) * self.running_mean
             new_running_var = self.momentum * sigma_sq + (1 - self.momentum) * self.running_var
 
