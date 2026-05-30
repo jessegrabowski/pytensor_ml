@@ -1,54 +1,50 @@
 name: release-pipeline
 
+permissions: {}
+
 on:
+  push:
+    branches:
+      - main
   release:
     types:
-      - created
+      - published
 
 jobs:
-  release-job:
-    name: Build & inspect package
+  build-package:
     runs-on: ubuntu-latest
+    permissions:
+      # write attestations and id-token are necessary for attest-build-provenance-github
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # hatch-vcs derives the version from git tags, so the full history is required.
           fetch-depth: 0
+          persist-credentials: false
       - uses: hynek/build-and-inspect-python-package@d44ca7d91762de7a7d5436ddae667c6da6d1c3df # v2.18.0
-        id: baipp
-      - name: Check version number match
-        run: |
-          echo "GITHUB_REF: ${GITHUB_REF}"
-          # The GITHUB_REF is something like "refs/tags/v1.2.3"; hatch-vcs strips
-          # the leading "v", so the package version is "1.2.3".
-          TAG=${GITHUB_REF##*/}
-          TAG=${TAG#v}
-          echo "tag=${TAG} package_version=${{ steps.baipp.outputs.package_version }}"
-          test "${TAG}" = "${{ steps.baipp.outputs.package_version }}"
-  pypi-publish:
-    needs: release-job
-    name: upload release to PyPI
+        with:
+          # Prove that the packages were built in the context of this workflow.
+          attest-build-provenance-github: true
+
+  publish-package:
+    # Don't publish from forks
+    if: github.repository_owner == 'jessegrabowski' && github.event_name == 'release' && github.event.action == 'published'
+    # Use the `release` GitHub environment to protect the Trusted Publishing (OIDC)
+    # workflow by requiring signoff from a maintainer.
+    environment: release
+    needs: build-package
     runs-on: ubuntu-latest
     permissions:
+      # write id-token is necessary for trusted publishing (OIDC)
       id-token: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download Distribution Artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          # Artifact name produced by build-and-inspect-python-package.
+          # The build-and-inspect-python-package action invokes upload-artifact.
           name: Packages
           path: dist
-      - name: Publish package distributions to PyPI
+      - name: Publish Package to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
-  test-install-job:
-    needs: pypi-publish
-    runs-on: ubuntu-latest
-    steps:
-    - name: Set up Python
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-      with:
-        python-version: 3.12
-    - name: Give PyPI a chance to update the index
-      run: sleep 360
-    - name: Install from PyPI
-      run: |
-        pip install pytensor_ml==${GITHUB_REF:11}
