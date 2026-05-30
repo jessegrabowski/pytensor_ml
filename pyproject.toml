@@ -31,9 +31,9 @@ keywords = [
 ]
 
 dependencies = [
-  "pytensor>=2.37.0",
+  "pytensor>=3.0.0,<4.0.0",
   "numpy",
-  "pymc"
+  "pymc>=6.0.0,<7.0.0"
 ]
 
 [project.optional-dependencies]

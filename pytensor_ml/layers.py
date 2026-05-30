@@ -82,7 +82,7 @@ class Dropout(Layer):
     def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
         X = pt.as_tensor(X)
         p = pt.as_tensor(self.p, dtype=config.floatX)
-        new_rng, mask = ptr.bernoulli(p=1 - p, size=X.shape, rng=self.rng).owner.outputs
+        new_rng, mask = ptr.bernoulli(p=1 - p, size=X.shape, rng=self.rng, return_next_rng=True)
         mask = mask.astype(config.floatX)
 
         X_masked = DropoutLayer(
