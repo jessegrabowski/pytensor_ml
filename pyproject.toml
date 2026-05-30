@@ -66,7 +66,7 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = ["versioneer.py", "setup.py", "_version.py"]
+exclude = ["pytensor_ml/_version.py"]
 
 [tool.ruff.lint]
 select = ["D", "E", "F", "I", "UP", "W", "RUF", "TID252"]
