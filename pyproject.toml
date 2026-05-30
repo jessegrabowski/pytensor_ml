@@ -75,6 +75,7 @@ ignore = [
   "RUF001", # String contains ambiguous character (such as Greek letters)
   "RUF002", # Docstring contains ambiguous character (such as Greek letters)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+  "RUF059", # Unpacked variable is never used (noisy for `X, y = fixture` unpacking)
   "D100",
   "D101",
   "D102",

@@ -83,12 +83,12 @@ def test_dropout(rng):
 
 def test_invalid_dropout_p_raises():
     with pytest.raises(
-        ValueError, match="Dropout probability has to be between 0 and 1, but got -0.1"
+        ValueError, match=r"Dropout probability has to be between 0 and 1, but got -0\.1"
     ):
         Dropout(name=None, p=-0.1)
 
     with pytest.raises(
-        ValueError, match="Dropout probability has to be between 0 and 1, but got 1.1"
+        ValueError, match=r"Dropout probability has to be between 0 and 1, but got 1\.1"
     ):
         Dropout(name=None, p=1.1)
 
