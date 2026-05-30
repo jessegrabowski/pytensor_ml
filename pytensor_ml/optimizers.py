@@ -5,7 +5,7 @@ import numpy as np
 import pytensor.tensor as pt
 
 from pytensor import config
-from pytensor.compile.function.types import Function
+from pytensor.compile import Function
 from pytensor.gradient import grad
 from pytensor.tensor import TensorLike, TensorVariable, sqrt
 
