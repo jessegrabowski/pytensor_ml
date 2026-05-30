@@ -31,9 +31,9 @@ keywords = [
 ]
 
 dependencies = [
-  "pytensor>=2.37.0",
+  "pytensor>=3.0.0,<4.0.0",
   "numpy",
-  "pymc"
+  "pymc>=6.0.0,<7.0.0"
 ]
 
 [project.optional-dependencies]
@@ -57,12 +57,16 @@ xfail_strict=true
 filterwarnings = [
     "error",
     'ignore:\nArviZ is undergoing a major refactor.*:FutureWarning',
+    # pytensor silences this on import, but our "error" rule above resets the
+    # warnings filter per-test and undoes it. Numba emits it from the numba
+    # linker, which is pytensor 3's default.
+    "ignore::numba.core.errors.NumbaPerformanceWarning",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = ["versioneer.py", "setup.py", "_version.py"]
+exclude = ["pytensor_ml/_version.py"]
 
 [tool.ruff.lint]
 select = ["D", "E", "F", "I", "UP", "W", "RUF", "TID252"]
@@ -71,6 +75,7 @@ ignore = [
   "RUF001", # String contains ambiguous character (such as Greek letters)
   "RUF002", # Docstring contains ambiguous character (such as Greek letters)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+  "RUF059", # Unpacked variable is never used (noisy for `X, y = fixture` unpacking)
   "D100",
   "D101",
   "D102",
