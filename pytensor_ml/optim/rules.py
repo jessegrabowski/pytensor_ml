@@ -1,0 +1,279 @@
+from collections.abc import Callable, Sequence
+
+import pytensor.tensor as pt
+
+from pytensor import config
+from pytensor.tensor import TensorVariable
+
+from pytensor_ml.optim.base import Parameter, Updates, counter, get_gradients, state_for
+
+
+def sgd_updates(
+    loss_or_gradients: TensorVariable | Sequence[TensorVariable],
+    parameters: Sequence[Parameter],
+    learning_rate: float = 1.0,
+) -> Updates:
+    r"""
+    Vanilla stochastic gradient descent: :math:`p \leftarrow p - \eta g`.
+
+    A default ``learning_rate`` of 1.0 makes the result a unit-rate descent direction, ready to seed a chain
+    whose terminal :func:`~pytensor_ml.optim.transform.scale` applies the actual rate.
+
+    Parameters
+    ----------
+    loss_or_gradients : TensorVariable or sequence of TensorVariable
+        Scalar loss to differentiate, or precomputed gradients.
+    parameters : sequence of shared tensor variable
+        Parameters to update.
+    learning_rate : float
+        Step size :math:`\eta`. Default 1.0.
+
+    Returns
+    -------
+    Updates
+        Mapping from each parameter to its next value.
+    """
+    gradients = get_gradients(loss_or_gradients, parameters)
+    return {
+        parameter: parameter - learning_rate * gradient
+        for parameter, gradient in zip(parameters, gradients)
+    }
+
+
+def adam_updates(
+    loss_or_gradients: TensorVariable | Sequence[TensorVariable],
+    parameters: Sequence[Parameter],
+    learning_rate: float = 1e-3,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    epsilon: float = 1e-8,
+) -> Updates:
+    r"""
+    Adam optimizer.
+
+    .. math::
+
+        m_t &= \beta_1 m_{t-1} + (1 - \beta_1) g_t \\
+        v_t &= \beta_2 v_{t-1} + (1 - \beta_2) g_t^2 \\
+        p &\leftarrow p - \eta \frac{m_t / (1 - \beta_1^t)}{\sqrt{v_t / (1 - \beta_2^t)} + \epsilon}
+
+    Parameters
+    ----------
+    loss_or_gradients : TensorVariable or sequence of TensorVariable
+        Scalar loss to differentiate, or precomputed gradients.
+    parameters : sequence of shared tensor variable
+        Parameters to update.
+    learning_rate : float
+        Step size :math:`\eta`. Default 1e-3.
+    beta1 : float
+        Exponential decay rate for the first moment :math:`m`. Default 0.9.
+    beta2 : float
+        Exponential decay rate for the second moment :math:`v`. Default 0.999.
+    epsilon : float
+        Constant added to the denominator for numerical stability. Default 1e-8.
+
+    Returns
+    -------
+    Updates
+        Mapping from each parameter and its moment buffers to their next values.
+    """
+    gradients = get_gradients(loss_or_gradients, parameters)
+
+    step_count = counter("adam/step_count")
+    new_step_count = step_count + 1
+    new_step_count_float = new_step_count.astype(config.floatX)
+    first_moment_bias_correction = 1 - beta1**new_step_count_float
+    second_moment_bias_correction = 1 - beta2**new_step_count_float
+
+    updates: Updates = {step_count: new_step_count}
+    for parameter, gradient in zip(parameters, gradients):
+        first_moment = state_for(parameter, "adam/first_moment")
+        second_moment = state_for(parameter, "adam/second_moment")
+
+        new_first_moment = beta1 * first_moment + (1 - beta1) * gradient
+        new_second_moment = beta2 * second_moment + (1 - beta2) * gradient**2
+        corrected_first_moment = new_first_moment / first_moment_bias_correction
+        corrected_second_moment = new_second_moment / second_moment_bias_correction
+
+        updates[first_moment] = new_first_moment
+        updates[second_moment] = new_second_moment
+        updates[parameter] = parameter - learning_rate * corrected_first_moment / (
+            pt.sqrt(corrected_second_moment) + epsilon
+        )
+
+    return updates
+
+
+def adamw_updates(
+    loss_or_gradients: TensorVariable | Sequence[TensorVariable],
+    parameters: Sequence[Parameter],
+    learning_rate: float = 1e-3,
+    weight_decay: float = 0.01,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    epsilon: float = 1e-8,
+    mask: Callable[[Parameter], bool] | None = None,
+) -> Updates:
+    r"""
+    AdamW: Adam with decoupled weight decay applied directly to the parameter, not the gradient.
+
+    .. math::
+
+        p \leftarrow p - \eta \left( \frac{\hat{m}}{\sqrt{\hat{v}} + \epsilon} + \lambda p \right)
+
+    Keeping the decay term :math:`\lambda p` outside the moment estimates keeps it correct under a scheduled
+    learning rate.
+
+    Parameters
+    ----------
+    loss_or_gradients : TensorVariable or sequence of TensorVariable
+        Scalar loss to differentiate, or precomputed gradients.
+    parameters : sequence of shared tensor variable
+        Parameters to update.
+    learning_rate : float
+        Step size :math:`\eta`. Default 1e-3.
+    weight_decay : float
+        Decoupled decay coefficient :math:`\lambda`. Default 0.01.
+    beta1 : float
+        Exponential decay rate for the first moment. Default 0.9.
+    beta2 : float
+        Exponential decay rate for the second moment. Default 0.999.
+    epsilon : float
+        Constant added to the denominator for numerical stability. Default 1e-8.
+    mask : callable, optional
+        Predicate ``(parameter) -> bool`` selecting which parameters receive decay. Decay is applied to every
+        parameter when omitted.
+
+    Returns
+    -------
+    Updates
+        Mapping from each parameter and its moment buffers to their next values.
+    """
+    gradients = get_gradients(loss_or_gradients, parameters)
+
+    step_count = counter("adam/step_count")
+    new_step_count = step_count + 1
+    new_step_count_float = new_step_count.astype(config.floatX)
+    first_moment_bias_correction = 1 - beta1**new_step_count_float
+    second_moment_bias_correction = 1 - beta2**new_step_count_float
+
+    updates: Updates = {step_count: new_step_count}
+    for parameter, gradient in zip(parameters, gradients):
+        first_moment = state_for(parameter, "adam/first_moment")
+        second_moment = state_for(parameter, "adam/second_moment")
+
+        new_first_moment = beta1 * first_moment + (1 - beta1) * gradient
+        new_second_moment = beta2 * second_moment + (1 - beta2) * gradient**2
+        adam_update = (new_first_moment / first_moment_bias_correction) / (
+            pt.sqrt(new_second_moment / second_moment_bias_correction) + epsilon
+        )
+        decay_term = weight_decay * parameter if (mask is None or mask(parameter)) else 0.0
+
+        updates[first_moment] = new_first_moment
+        updates[second_moment] = new_second_moment
+        updates[parameter] = parameter - learning_rate * (adam_update + decay_term)
+
+    return updates
+
+
+def adagrad_updates(
+    loss_or_gradients: TensorVariable | Sequence[TensorVariable],
+    parameters: Sequence[Parameter],
+    learning_rate: float = 0.01,
+    epsilon: float = 1e-8,
+) -> Updates:
+    r"""
+    AdaGrad: per-parameter learning rate scaled by the inverse root of accumulated squared gradients.
+
+    .. math::
+
+        G &\leftarrow G + g^2 \\
+        p &\leftarrow p - \eta \frac{g}{\sqrt{G + \epsilon}}
+
+    Parameters
+    ----------
+    loss_or_gradients : TensorVariable or sequence of TensorVariable
+        Scalar loss to differentiate, or precomputed gradients.
+    parameters : sequence of shared tensor variable
+        Parameters to update.
+    learning_rate : float
+        Step size :math:`\eta`. Default 0.01.
+    epsilon : float
+        Constant added under the root for numerical stability. Default 1e-8.
+
+    Returns
+    -------
+    Updates
+        Mapping from each parameter and its accumulator to their next values.
+    """
+    gradients = get_gradients(loss_or_gradients, parameters)
+
+    updates: Updates = {}
+    for parameter, gradient in zip(parameters, gradients):
+        sum_squared_gradients = state_for(parameter, "adagrad/sum_squared_gradients")
+        new_sum_squared_gradients = sum_squared_gradients + gradient**2
+        updates[sum_squared_gradients] = new_sum_squared_gradients
+        updates[parameter] = parameter - learning_rate * gradient / pt.sqrt(
+            new_sum_squared_gradients + epsilon
+        )
+
+    return updates
+
+
+def adadelta_updates(
+    loss_or_gradients: TensorVariable | Sequence[TensorVariable],
+    parameters: Sequence[Parameter],
+    learning_rate: float = 1.0,
+    rho: float = 0.9,
+    epsilon: float = 1e-8,
+) -> Updates:
+    r"""
+    AdaDelta: AdaGrad variant with a decaying window of squared gradients and squared updates.
+
+    .. math::
+
+        v &\leftarrow \rho v + (1 - \rho) g^2 \\
+        \Delta &= \frac{\sqrt{u + \epsilon}}{\sqrt{v + \epsilon}} g \\
+        u &\leftarrow \rho u + (1 - \rho) \Delta^2 \\
+        p &\leftarrow p - \eta \Delta
+
+    Parameters
+    ----------
+    loss_or_gradients : TensorVariable or sequence of TensorVariable
+        Scalar loss to differentiate, or precomputed gradients.
+    parameters : sequence of shared tensor variable
+        Parameters to update.
+    learning_rate : float
+        Step size :math:`\eta`. Default 1.0.
+    rho : float
+        Decay rate for the running averages. Default 0.9.
+    epsilon : float
+        Constant added under the roots for numerical stability. Default 1e-8.
+
+    Returns
+    -------
+    Updates
+        Mapping from each parameter and its two accumulators to their next values.
+    """
+    gradients = get_gradients(loss_or_gradients, parameters)
+
+    updates: Updates = {}
+    for parameter, gradient in zip(parameters, gradients):
+        accumulated_squared_gradient = state_for(parameter, "adadelta/accumulated_squared_gradient")
+        accumulated_squared_update = state_for(parameter, "adadelta/accumulated_squared_update")
+
+        new_accumulated_squared_gradient = (
+            rho * accumulated_squared_gradient + (1 - rho) * gradient**2
+        )
+        update = (
+            pt.sqrt(accumulated_squared_update + epsilon)
+            / pt.sqrt(new_accumulated_squared_gradient + epsilon)
+            * gradient
+        )
+        new_accumulated_squared_update = rho * accumulated_squared_update + (1 - rho) * update**2
+
+        updates[accumulated_squared_gradient] = new_accumulated_squared_gradient
+        updates[accumulated_squared_update] = new_accumulated_squared_update
+        updates[parameter] = parameter - learning_rate * update
+
+    return updates
