@@ -1,0 +1,58 @@
+name: mypy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mypy.yml"
+      - "pytensor_ml/**"
+      - "scripts/run_mypy.py"
+      - "scripts/mypy-failing.txt"
+      - "pyproject.toml"
+      - "conda_envs/**"
+
+# Cancels all previous workflow runs for pull requests that have not completed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  mypy:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+    - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      env:
+        CACHE_NUMBER: 0
+      with:
+        path: ~/conda_pkgs_dir
+        key: ${{ runner.os }}-py312-conda-${{ env.CACHE_NUMBER }}-${{
+          hashFiles('conda_envs/pytensor_ml.yml') }}
+    - uses: conda-incubator/setup-miniconda@8ee1f361103df19b6f8c8655fd3967a8ecb162d5 # v4.0.1
+      with:
+        miniforge-variant: Miniforge3
+        miniforge-version: latest
+        mamba-version: "*"
+        activate-environment: pytensor_ml
+        channel-priority: strict
+        environment-file: conda_envs/pytensor_ml.yml
+        python-version: 3.12
+        use-mamba: true
+        use-only-tar-bz2: false
+
+    - name: Install current branch
+      run: |
+        conda activate pytensor_ml
+        pip install -e .
+        python --version
+
+    - name: Run mypy
+      run: |
+        conda activate pytensor_ml
+        python ./scripts/run_mypy.py --verbose
