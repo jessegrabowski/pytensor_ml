@@ -12,7 +12,7 @@ repos:
     -   id: trailing-whitespace
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.15
+  rev: v0.15.17
   hooks:
     - id: ruff
       args: [ --fix, --exit-non-zero-on-fix ]
@@ -50,7 +50,7 @@ repos:
                conf.py)
       entry: >
           (?x)(arviz-devs.github.io|
-               pymc-experimental.readthedocs.io|
+               pymc-extras.readthedocs.io|
                docs.pymc.io|
                numpy.org/doc|
                pymc-examples.readthedocs.io|
