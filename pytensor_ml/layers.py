@@ -112,6 +112,48 @@ class PredictionBatchNormLayer(LayerOp):
 
 
 class BatchNorm2D(Layer):
+    r"""
+    Batch normalization over the batch axis.
+
+    Standardize each feature across the batch, then optionally apply a learned affine transform:
+
+    .. math::
+
+        y = \frac{x - \mathrm{E}[x]}{\sqrt{\mathrm{Var}[x] + \epsilon}} \cdot \gamma + \beta,
+
+    where the mean and (biased) variance are taken over the batch (first) axis. During training the
+    batch statistics are used and the running mean and variance are updated toward them as
+    :math:`(1 - m)\,r + m\,b` from each batch statistic :math:`b`.
+
+    Parameters
+    ----------
+    name : str, optional
+        Name used as a prefix for the layer's parameters. Default is "BatchNorm".
+    n_in : int, optional
+        Size of the feature axis. Inferred from the input's last dimension on the first call when
+        omitted.
+    epsilon : float, optional
+        Constant :math:`\epsilon` added to the variance for numerical stability. Default is 1e-5.
+    momentum : float, optional
+        Weight :math:`m` of the current batch statistic in the running-average update. Default is
+        0.1.
+    affine : bool, optional
+        Apply the learned scale :math:`\gamma` and shift :math:`\beta`. Default is True.
+    track_running_stats : bool, optional
+        Maintain running mean and variance for use at prediction time. Default is True.
+
+    Notes
+    -----
+    Batch normalization is not symmetric between training and prediction, so inference needs
+    special handling. A plain forward pass -- calling the layer, or compiling with
+    :func:`function` -- normalizes with the *current batch's* mean and variance, making each
+    output depend on the other samples in the batch. That is what you want while training, but
+    wrong at inference, where an example must normalize the same way no matter what it happens to
+    be batched with. Compile prediction graphs with :func:`compile_predict`, which applies
+    :func:`rewrite_for_prediction` to substitute the accumulated running statistics for the batch
+    statistics.
+    """
+
     def __init__(
         self,
         name: str | None = None,
@@ -186,7 +228,7 @@ class BatchNorm2D(Layer):
             batch_norm_op = BatchNormLayer(
                 inputs=[*inputs, self.running_mean, self.running_var],
                 outputs=[X_rescaled, new_running_mean, new_running_var],
-                name=f"{self.name}",
+                name=self.name,
                 n_in=self.n_in,
                 epsilon=self.epsilon,
                 momentum=self.momentum,
@@ -201,7 +243,7 @@ class BatchNorm2D(Layer):
             batch_norm_op = NoRunningStatsBatchNormLayer(
                 inputs=inputs,
                 outputs=[X_rescaled],
-                name=f"{self.name}",
+                name=self.name,
                 n_in=self.n_in,
                 epsilon=self.epsilon,
                 momentum=self.momentum,
