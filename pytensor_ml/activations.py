@@ -84,6 +84,31 @@ class GELU(Activation):
         return out
 
 
+class Swish(Activation):
+    r"""
+    Swish activation, also known as SiLU.
+
+    Compute :math:`\mathrm{Swish}(x) = x \, \sigma(\beta x)`, where :math:`\sigma` is the logistic
+    sigmoid. With :math:`\beta = 1` this is the Sigmoid Linear Unit (PyTorch ``nn.SiLU``, HuggingFace
+    ``"silu"`` / ``"swish"``).
+
+    Parameters
+    ----------
+    beta : float, optional
+        Slope of the sigmoid gate. Larger :math:`\beta` sharpens the gate toward a ReLU; :math:`\beta
+        \to 0` collapses it toward the linear map :math:`x/2`. Default is 1.0.
+    """
+
+    def __init__(self, beta: float = 1.0):
+        self.beta = beta
+
+    def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
+        x = pt.as_tensor(x)
+        out = x * pt.sigmoid(self.beta * x)
+        out.name = "Swish"
+        return out
+
+
 class Softmax(Activation):
     def __init__(self, axis: int = -1):
         self.axis = axis
@@ -94,4 +119,4 @@ class Softmax(Activation):
         return out
 
 
-__all__ = ["GELU", "LeakyReLU", "ReLU", "Sigmoid", "SoftPlus", "Softmax", "Tanh"]
+__all__ = ["GELU", "LeakyReLU", "ReLU", "Sigmoid", "SoftPlus", "Softmax", "Swish", "Tanh"]

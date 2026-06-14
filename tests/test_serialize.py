@@ -8,7 +8,7 @@ import pytest
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor.random.op import RandomVariable
 
-from pytensor_ml.activations import GELU, LeakyReLU, ReLU, Sigmoid, Softmax, SoftPlus, Tanh
+from pytensor_ml.activations import GELU, LeakyReLU, ReLU, Sigmoid, Softmax, SoftPlus, Swish, Tanh
 from pytensor_ml.json_serialize import (
     deserialize_graph,
     op_from_json,
@@ -27,6 +27,8 @@ ALL_ACTIVATIONS = [
     Softmax(),
     GELU(approximate=False),
     GELU(approximate=True),
+    Swish(),
+    Swish(beta=1.5),
 ]
 
 
@@ -56,6 +58,8 @@ def initialized_network(*layers, seed=0):
 def _activation_id(activation):
     if isinstance(activation, GELU) and activation.approximate:
         return "GELU_tanh"
+    if isinstance(activation, Swish):
+        return f"Swish_beta{activation.beta}"
     return type(activation).__name__
 
 
