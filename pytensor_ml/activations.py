@@ -41,10 +41,11 @@ class LeakyReLU(Activation):
         The slope :math:`\alpha` applied to negative inputs. Default is 0.01.
     """
 
-    def __init__(self, negative_slope: pt.TensorLike = 0.01):
+    def __init__(self, negative_slope: float = 0.01):
         self.negative_slope = negative_slope
 
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
+        x = pt.as_tensor(x)
         out = pt.switch(x > 0, x, -self.negative_slope * x)
         out.name = "LeakyReLU"
         return out

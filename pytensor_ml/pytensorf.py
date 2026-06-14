@@ -25,7 +25,7 @@ RandomSeed = None | int | Sequence[int] | np.ndarray
 class LayerOp(OpFromGraph):
     # This can be removed once https://github.com/pymc-devs/pytensor/issues/1114 is fixed
 
-    __props__ = ()
+    __props__: tuple[str, ...] = ()
 
     def __init__(self, *args, **kwargs):
         prop_kwargs = {key: value for key, value in kwargs.items() if key in self.__props__}

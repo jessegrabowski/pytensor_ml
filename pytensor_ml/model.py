@@ -18,7 +18,7 @@ class Model:
         self.X = X
         self.y = y
         self._compile_kwargs = compile_kwargs or {}
-        self._predict_fn = None
+        self._predict_fn: Function | None = None
 
     @property
     def weights(self) -> list[TrainableParameter]:

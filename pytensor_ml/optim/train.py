@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from pytensor.compile import Function
+from pytensor.compile import Function, SharedVariable
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import Parameter, UpdateRule
@@ -53,7 +53,8 @@ def compile_train(
     if inputs is None:
         inputs = collect_data_inputs(loss)
 
-    updates = dict(rule(loss, parameters))
-    updates.update(collect_non_trainable_updates(loss))
+    updates: dict[SharedVariable, TensorVariable] = dict(rule(loss, parameters))
+    for parameter, new_value in collect_non_trainable_updates(loss).items():
+        updates[parameter] = new_value
 
     return function(list(inputs), loss, updates=updates, **(compile_kwargs or {}))

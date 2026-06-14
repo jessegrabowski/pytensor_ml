@@ -123,6 +123,8 @@ strict_equality = true
 warn_redundant_casts = true
 warn_unused_configs = true
 warn_unused_ignores = true
-warn_return_any = true
+# pytensor ops are typed to return Any, so returning their results from a function annotated with a
+# concrete tensor type fires constantly without catching real bugs in our code.
+warn_return_any = false
 warn_unreachable = true
 files = ["pytensor_ml"]
