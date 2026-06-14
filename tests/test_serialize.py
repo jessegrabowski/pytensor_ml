@@ -15,7 +15,15 @@ from pytensor_ml.json_serialize import (
     prop_to_json,
     serialize_graph,
 )
-from pytensor_ml.layers import BatchNorm2D, Concatenate, Dropout, Linear, Sequential, Squeeze
+from pytensor_ml.layers import (
+    BatchNorm2D,
+    Concatenate,
+    Dropout,
+    LayerNorm,
+    Linear,
+    Sequential,
+    Squeeze,
+)
 from pytensor_ml.params import collect_shared_variables, collect_trainable_params
 
 ALL_ACTIVATIONS = [
@@ -82,6 +90,12 @@ def test_linear_bias_variants_roundtrip(bias):
 )
 def test_batchnorm_variants_roundtrip(kwargs):
     X, output = initialized_network(Linear("fc", 4, 4), BatchNorm2D("bn", n_in=4, **kwargs))
+    assert_outputs_roundtrip([X], output, [np.random.default_rng(1).normal(size=(8, 4))])
+
+
+@pytest.mark.parametrize("affine", [True, False], ids=["affine", "no_affine"])
+def test_layernorm_roundtrips(affine):
+    X, output = initialized_network(Linear("fc", 4, 6), LayerNorm("ln", n_in=6, affine=affine))
     assert_outputs_roundtrip([X], output, [np.random.default_rng(1).normal(size=(8, 4))])
 
 
