@@ -4,8 +4,9 @@ from typing import Literal
 
 import numpy as np
 
-from pymc.util import RandomSeed
 from pytensor.compile.sharedvalue import SharedVariable
+
+from pytensor_ml.pytensorf import RandomSeed
 
 RandomState = RandomSeed | np.random.RandomState | np.random.Generator
 
