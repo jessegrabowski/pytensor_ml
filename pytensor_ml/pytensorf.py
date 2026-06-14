@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import cast
 
 import pytensor
@@ -6,7 +7,8 @@ from pymc.pytensorf import SeedSequenceSeed, collect_default_updates, reseed_rng
 from pytensor import Mode
 from pytensor.compile import Function, SharedVariable, get_mode
 from pytensor.compile.builders import OpFromGraph
-from pytensor.graph import FunctionGraph, RewriteDatabaseQuery, rewrite_graph
+from pytensor.graph import FunctionGraph, RewriteDatabaseQuery, graph_inputs, rewrite_graph
+from pytensor.graph.basic import Constant
 from pytensor.tensor.variable import Variable
 
 
@@ -112,4 +114,42 @@ def rewrite_for_prediction(graph):
     return fgraph.outputs
 
 
-__all__ = ["function", "rewrite_for_prediction", "rewrite_pregrad"]
+def compile_predict(
+    prediction: Variable,
+    *,
+    inputs: Sequence[Variable] | None = None,
+    compile_kwargs: dict | None = None,
+) -> Function:
+    """
+    Compile a forward-pass function, specialized for inference.
+
+    Applies :func:`rewrite_for_prediction` to the graph before compiling, which drops stochastic training-only
+    layers (such as Dropout) and switches batch norm to its running statistics. The data inputs are collected
+    from the graph unless given explicitly.
+
+    Parameters
+    ----------
+    prediction : Variable
+        The model output to evaluate.
+    inputs : sequence of Variable, optional
+        Data inputs of the compiled function, in call order. Collected from the graph (the non-constant,
+        non-shared inputs) when omitted; pass them explicitly when call order matters.
+    compile_kwargs : dict, optional
+        Extra keyword arguments forwarded to :func:`function`.
+
+    Returns
+    -------
+    Function
+        The compiled prediction function.
+    """
+    prediction = rewrite_for_prediction(prediction)
+    if inputs is None:
+        inputs = [
+            variable
+            for variable in graph_inputs([prediction])
+            if not isinstance(variable, Constant | SharedVariable)
+        ]
+    return function(list(inputs), prediction, **(compile_kwargs or {}))
+
+
+__all__ = ["compile_predict", "function", "rewrite_for_prediction", "rewrite_pregrad"]

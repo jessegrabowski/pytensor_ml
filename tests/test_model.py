@@ -4,7 +4,9 @@ import pytensor.tensor as pt
 from pytensor import config
 
 from pytensor_ml.layers import BatchNorm2D, Linear, Sequential
+from pytensor_ml.loss import SquaredError
 from pytensor_ml.model import Model
+from pytensor_ml.optim import sgd
 
 
 class TestModelPredict:
@@ -79,6 +81,19 @@ class TestModelPredict:
 
         np.testing.assert_allclose(result1, expected1, rtol=1e-5)
         np.testing.assert_allclose(result2, expected2, rtol=1e-5)
+
+    def test_compile_train_reduces_loss(self):
+        X = pt.tensor("X", shape=(None, 4))
+        y = Sequential(Linear("fc1", n_in=4, n_out=8), Linear("fc2", n_in=8, n_out=1))(X)
+        model = Model(X, y).initialize(seed=0)
+
+        step = model.compile_train(sgd(learning_rate=1e-2), SquaredError(), ndim_out=2)
+
+        rng = np.random.default_rng(0)
+        X_batch = rng.normal(size=(64, 4)).astype(config.floatX)
+        target = rng.normal(size=(64, 1)).astype(config.floatX)
+        history = [float(step(X_batch, target)) for _ in range(50)]
+        assert history[-1] < history[0]
 
     def test_predict_caches_function(self):
         """Verify that predict function is compiled once and reused."""

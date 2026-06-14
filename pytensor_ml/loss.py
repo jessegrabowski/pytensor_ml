@@ -63,3 +63,37 @@ class CrossEntropy(Loss):
             return -self.reduction(log_softmax)
 
         return -self.reduction((y_true * log_softmax).sum(axis=-1))
+
+
+def supervised_loss(
+    prediction: pt.TensorVariable,
+    loss_fn: Loss,
+    ndim_out: int = 1,
+) -> tuple[pt.TensorVariable, pt.TensorVariable]:
+    """
+    Build a training loss and its target placeholder from a model prediction.
+
+    The target is a fresh input variable shaped like the labelled slice of ``prediction``: its first
+    ``ndim_out`` dimensions match ``prediction`` and any trailing dimensions are dropped. For example, a
+    ``(batch, classes)`` logit prediction with ``ndim_out=2`` yields a ``(batch, classes)`` target.
+
+    Parameters
+    ----------
+    prediction : TensorVariable
+        Model output to compare against the target.
+    loss_fn : Loss
+        Callable ``(target, prediction) -> scalar loss``.
+    ndim_out : int
+        Number of leading prediction dimensions the target shares. Default 1.
+
+    Returns
+    -------
+    loss : TensorVariable
+        Scalar training loss.
+    target : TensorVariable
+        Input placeholder for the ground-truth labels, to be supplied at call time.
+    """
+    label_slice = (slice(None),) * ndim_out + (0,) * (prediction.ndim - ndim_out)
+    target = prediction[label_slice].type()
+    target.name = "target"
+    return loss_fn(target, prediction), target

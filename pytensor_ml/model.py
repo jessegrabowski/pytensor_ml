@@ -1,105 +1,87 @@
-from typing import Any
-
 import numpy as np
 
+from pytensor.compile import Function
 from pytensor.printing import debugprint
 from pytensor.tensor.variable import TensorVariable
 
-from pytensor_ml.params import (
-    NonTrainableParameter,
-    TrainableParameter,
-    collect_non_trainable_params,
-    collect_non_trainable_updates,
-    collect_trainable_params,
-)
-from pytensor_ml.pytensorf import function, rewrite_for_prediction
-from pytensor_ml.state import InitializationScheme, OptimizerState
+from pytensor_ml import optim
+from pytensor_ml.loss import Loss, supervised_loss
+from pytensor_ml.params import TrainableParameter, collect_trainable_params
+from pytensor_ml.pytensorf import compile_predict
+from pytensor_ml.state import InitializationScheme, initialize_params
 
 
 class Model:
-    def __init__(
-        self,
-        X: TensorVariable,
-        y: TensorVariable,
-        compile_kwargs: dict | None = None,
-    ):
+    """A network's input and output, with conveniences to initialize its weights, train, and run inference."""
+
+    def __init__(self, X: TensorVariable, y: TensorVariable, compile_kwargs: dict | None = None):
         self.X = X
         self.y = y
-
-        self._compile_kwargs = compile_kwargs if compile_kwargs else {}
-        self._state: OptimizerState | None = None
+        self._compile_kwargs = compile_kwargs or {}
         self._predict_fn = None
-
-    def _ensure_state(self) -> OptimizerState:
-        if self._state is None:
-            self._state = OptimizerState(
-                params=self.weights,
-                non_trainable_params=collect_non_trainable_params(self.y),
-            )
-        return self._state
-
-    def initialize(
-        self,
-        scheme: InitializationScheme = "xavier_normal",
-        seed: Any = None,
-    ) -> "Model":
-        """
-        Initialize model weights.
-
-        Parameters
-        ----------
-        scheme
-            Initialization scheme for model parameters.
-        seed
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        self
-            Returns self for method chaining.
-        """
-        self._ensure_state().initialize(param_scheme=scheme, seed=seed)
-        return self
 
     @property
     def weights(self) -> list[TrainableParameter]:
         return collect_trainable_params(self.y)
 
-    @property
-    def non_trainable(self) -> list[NonTrainableParameter]:
-        return collect_non_trainable_params(self.y)
+    def initialize(
+        self,
+        scheme: InitializationScheme = "xavier_normal",
+        seed: int | np.random.Generator | None = None,
+    ) -> "Model":
+        """
+        Initialize the trainable weights in place and return self.
 
-    @property
-    def updates(self) -> dict[NonTrainableParameter, TensorVariable]:
-        return collect_non_trainable_updates(self.y)
+        Parameters
+        ----------
+        scheme : str
+            Initialization scheme for the weights. Default 'xavier_normal'.
+        seed : int or numpy Generator, optional
+            Seed for reproducible initialization.
+        """
+        parameters = self.weights
+        for parameter, value in zip(parameters, initialize_params(parameters, scheme, rng=seed)):
+            parameter.set_value(value)
+        return self
 
-    @property
-    def state(self) -> OptimizerState:
-        return self._ensure_state()
+    def compile_train(
+        self,
+        rule: optim.UpdateRule,
+        loss_fn: Loss,
+        ndim_out: int = 1,
+        compile_kwargs: dict | None = None,
+    ) -> Function:
+        """
+        Compile a one-step training function against a supervised target.
 
-    @property
-    def weight_values(self) -> list[np.ndarray]:
-        return self._ensure_state().param_values
+        Builds a target placeholder and loss from the model output with :func:`supervised_loss`, then compiles
+        a step over the model's weights. The returned function is called as ``step(X_batch, target_batch)`` and
+        returns the loss, applying every update in place.
 
-    @weight_values.setter
-    def weight_values(self, values: list[np.ndarray]) -> None:
-        self._ensure_state().param_values = values
-
-    @property
-    def non_trainable_values(self) -> list[np.ndarray]:
-        return self._ensure_state().non_trainable_values
-
-    @non_trainable_values.setter
-    def non_trainable_values(self, values: list[np.ndarray]) -> None:
-        self._ensure_state().non_trainable_values = values
+        Parameters
+        ----------
+        rule : UpdateRule
+            A configured optimizer, e.g. ``adam(1e-3)``.
+        loss_fn : Loss
+            Callable ``(target, prediction) -> scalar loss``.
+        ndim_out : int
+            Number of leading output dimensions the target shares. Default 1.
+        compile_kwargs : dict, optional
+            Keyword arguments forwarded to the function compiler. Defaults to the model's own compile kwargs.
+        """
+        loss, target = supervised_loss(self.y, loss_fn, ndim_out)
+        return optim.compile_train(
+            loss,
+            rule,
+            parameters=self.weights,
+            inputs=[self.X, target],
+            compile_kwargs=compile_kwargs or self._compile_kwargs,
+        )
 
     def predict(self, X_values: np.ndarray) -> np.ndarray:
         if self._predict_fn is None:
-            y_pred = rewrite_for_prediction(self.y)
-            self._predict_fn = function(
-                [self.X],
-                y_pred,
-                **self._compile_kwargs,
+            self._predict_fn = compile_predict(
+                self.y, inputs=[self.X], compile_kwargs=self._compile_kwargs
             )
 
         result = self._predict_fn(X_values)
