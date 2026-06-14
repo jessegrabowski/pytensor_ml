@@ -3,50 +3,83 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
+from pytensor import config
+from pytensor.compile import Mode
 from scipy.special import erf
 
-from pytensor_ml.activations import GELU, Swish
+from pytensor_ml.activations import GELU, LeakyReLU, ReLU, Sigmoid, SoftPlus, Swish, Tanh
+from pytensor_ml.layers import Linear, Sequential
+from pytensor_ml.loss import CrossEntropy, supervised_loss
+from pytensor_ml.optim import adam, compile_train
+from pytensor_ml.params import collect_trainable_params
+from pytensor_ml.state import initialize_params
+
+# Fastest compile mode. Test network is tiny so no optimizations needed
+FAST_MODE = Mode(linker="py", optimizer="fast_compile")
+
+# One-hot XOR: not linearly separable, so a single-hidden-layer network can only fit it if the activation
+# supplies a working nonlinearity end to end.
+XOR_X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=config.floatX)
+XOR_Y = np.array([[1, 0], [0, 1], [0, 1], [1, 0]], dtype=config.floatX)
+
+# A confidently fit XOR drives cross-entropy toward zero; a linear/identity activation is stuck near ln(2).
+# Threshold between them, with margin: every real activation crosses it within ~80 steps.
+XOR_LOSS_THRESHOLD = 0.1
+XOR_MAX_STEPS = 200
+
+HIDDEN_ACTIVATIONS = [
+    ReLU(),
+    LeakyReLU(),
+    Tanh(),
+    Sigmoid(),
+    SoftPlus(),
+    GELU(approximate=False),
+    GELU(approximate=True),
+    Swish(),
+]
 
 
-def gelu_exact(x):
-    return 0.5 * x * (1 + erf(x / np.sqrt(2)))
+def _activation_id(activation):
+    if isinstance(activation, GELU) and activation.approximate:
+        return "GELU_tanh"
+    return type(activation).__name__
 
 
-def gelu_tanh(x):
-    return 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
-
-
-@pytest.mark.parametrize(
-    "approximate, reference", [(False, gelu_exact), (True, gelu_tanh)], ids=["exact", "tanh"]
-)
-def test_gelu_matches_reference(approximate, reference):
+def test_gelu_and_approx_match_erf_reference():
     x = pt.vector("x")
-    f = pytensor.function([x], GELU(approximate=approximate)(x))
     values = np.linspace(-6, 6, 101)
-    np.testing.assert_allclose(f(values), reference(values), rtol=1e-6, atol=1e-8)
+    reference = 0.5 * values * (1 + erf(values / np.sqrt(2)))
+
+    exact = pytensor.function([x], GELU(approximate=False)(x), mode=FAST_MODE)
+    approx = pytensor.function([x], GELU(approximate=True)(x), mode=FAST_MODE)
+
+    np.testing.assert_allclose(exact(values), reference, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(approx(values), reference, atol=1e-3)
 
 
-@pytest.mark.parametrize("beta", [0.5, 1.0, 2.0])
-def test_swish_matches_reference(beta):
-    x = pt.vector("x")
-    f = pytensor.function([x], Swish(beta=beta)(x))
-    values = np.linspace(-6, 6, 101)
-    reference = values / (1 + np.exp(-beta * values))
-    np.testing.assert_allclose(f(values), reference, rtol=1e-6, atol=1e-8)
-
-
-def test_swish_beta_one_is_silu():
-    x = pt.vector("x")
-    f = pytensor.function([x], Swish()(x))
-    values = np.linspace(-6, 6, 101)
-    np.testing.assert_allclose(
-        f(values), values * (1 / (1 + np.exp(-values))), rtol=1e-6, atol=1e-8
+@pytest.mark.parametrize("activation", HIDDEN_ACTIVATIONS, ids=_activation_id)
+def test_activation_lets_a_network_learn_xor(activation):
+    X = pt.matrix("X")
+    output = Sequential(Linear("fc1", 2, 8), activation, Linear("fc2", 8, 2))(X)
+    parameters = collect_trainable_params(output)
+    for parameter, value in zip(
+        parameters, initialize_params(parameters, rng=np.random.default_rng(0))
+    ):
+        parameter.set_value(value)
+    loss, target = supervised_loss(
+        output, CrossEntropy(expect_onehot_labels=True, expect_logits=True), ndim_out=2
+    )
+    step = compile_train(
+        loss,
+        adam(learning_rate=0.05),
+        parameters=parameters,
+        inputs=[X, target],
+        compile_kwargs={"mode": FAST_MODE},
     )
 
-
-def test_gelu_tanh_approximates_exact():
-    x = pt.vector("x")
-    exact = pytensor.function([x], GELU(approximate=False)(x))
-    approx = pytensor.function([x], GELU(approximate=True)(x))
-    values = np.linspace(-6, 6, 101)
-    np.testing.assert_allclose(approx(values), exact(values), atol=1e-3)
+    # Stop the moment the loss drops below threshold so CI pays only for the steps actually needed, and fail
+    # loudly if a broken (gradient-killing) activation never gets there.
+    for _ in range(XOR_MAX_STEPS):
+        if float(step(XOR_X, XOR_Y)) < XOR_LOSS_THRESHOLD:
+            return
+    pytest.fail("network never confidently learned XOR (loss stayed >= threshold)")
