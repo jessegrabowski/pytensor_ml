@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
@@ -9,7 +9,12 @@ import pytensor.tensor.random as ptr
 from pytensor import config
 from pytensor.compile.sharedvalue import shared
 
-from pytensor_ml.params import non_trainable, trainable
+from pytensor_ml.params import (
+    NonTrainableParameter,
+    TrainableParameter,
+    non_trainable,
+    trainable,
+)
 from pytensor_ml.pytensorf import LayerOp, UnaryLayerOp
 
 
@@ -19,6 +24,7 @@ def shape_to_str(shape):
 
 
 class Layer(ABC):
+    @abstractmethod
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable: ...
 
 
@@ -215,15 +221,15 @@ class BatchNorm2D(Layer):
         self.affine = affine
         self.track_running_stats = track_running_stats
 
-        self.scale = None
-        self.loc = None
-        self.running_mean = None
-        self.running_var = None
+        self.scale: TrainableParameter | None = None
+        self.loc: TrainableParameter | None = None
+        self.running_mean: NonTrainableParameter | None = None
+        self.running_var: NonTrainableParameter | None = None
 
         self.initialized = False
         self._initialize_params(None)
 
-    def _initialize_params(self, X: pt.TensorLike | None):
+    def _initialize_params(self, X: pt.TensorVariable | None):
         if self.initialized:
             return
 
@@ -261,16 +267,18 @@ class BatchNorm2D(Layer):
         X_normalized = (X - mu) / pt.sqrt(sigma_sq + self.epsilon)
 
         if self.affine:
+            assert self.scale is not None and self.loc is not None
             X_rescaled = X_normalized * self.scale + self.loc
             inputs.extend([self.loc, self.scale])
         else:
             X_rescaled = X_normalized
 
         if self.track_running_stats:
+            assert self.running_mean is not None and self.running_var is not None
             new_running_mean = self.momentum * mu + (1 - self.momentum) * self.running_mean
             new_running_var = self.momentum * sigma_sq + (1 - self.momentum) * self.running_var
 
-            batch_norm_op = BatchNormLayer(
+            batch_norm_op: LayerOp = BatchNormLayer(
                 inputs=[*inputs, self.running_mean, self.running_var],
                 outputs=[X_rescaled, new_running_mean, new_running_var],
                 name=self.name,
@@ -304,7 +312,7 @@ class BatchNorm2D(Layer):
         return X_transformed
 
 
-class LayerNormLayer(LayerOp):
+class LayerNormLayer(UnaryLayerOp):
     __props__ = ("n_in", "epsilon", "affine")
 
 
@@ -347,13 +355,13 @@ class LayerNorm(Layer):
         self.epsilon = epsilon
         self.affine = affine
 
-        self.scale = None
-        self.loc = None
+        self.scale: TrainableParameter | None = None
+        self.loc: TrainableParameter | None = None
 
         self.initialized = False
         self._initialize_params(None)
 
-    def _initialize_params(self, X: pt.TensorLike | None):
+    def _initialize_params(self, X: pt.TensorVariable | None):
         if self.initialized:
             return
 
@@ -368,7 +376,7 @@ class LayerNorm(Layer):
 
         self.initialized = True
 
-    def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
+    def __call__(self, X: pt.TensorLike) -> pt.TensorVariable:
         X = pt.as_tensor(X)
         self._initialize_params(X)
 
@@ -380,6 +388,7 @@ class LayerNorm(Layer):
 
         inputs = [X]
         if self.affine:
+            assert self.scale is not None and self.loc is not None
             X_rescaled = X_normalized * self.scale + self.loc
             inputs.extend([self.scale, self.loc])
         else:
