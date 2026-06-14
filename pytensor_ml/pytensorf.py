@@ -16,7 +16,7 @@ from pytensor.scan.op import Scan
 from pytensor.tensor.random.op import RandomVariable, RNGConsumerOp
 from pytensor.tensor.random.type import RandomType
 from pytensor.tensor.random.variable import RandomGeneratorSharedVariable
-from pytensor.tensor.variable import Variable
+from pytensor.tensor.variable import TensorVariable, Variable
 
 SeedSequenceSeed = None | int | Sequence[int] | np.ndarray | np.random.SeedSequence
 RandomSeed = None | int | Sequence[int] | np.ndarray
@@ -39,6 +39,20 @@ class LayerOp(OpFromGraph):
     def update_map(self) -> dict[int, int]:
         """Return a mapping of output indexes to input indexes"""
         return {}
+
+
+class UnaryLayerOp(LayerOp):
+    """A ``LayerOp`` with exactly one output, typed as such.
+
+    ``OpFromGraph.__call__`` is annotated ``Variable | list[Variable]`` because an op may produce many
+    outputs; a unary layer op produces one, so narrow the result to ``TensorVariable``. The ``isinstance``
+    guard narrows for the type checker without a cast and asserts the invariant at runtime.
+    """
+
+    def __call__(self, *inputs, **kwargs) -> TensorVariable:
+        out = super().__call__(*inputs, **kwargs)
+        assert isinstance(out, TensorVariable), f"{type(self).__name__} produced multiple outputs"
+        return out
 
 
 def atleast_list(x):
