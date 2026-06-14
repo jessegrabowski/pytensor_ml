@@ -19,6 +19,7 @@ from pytensor_ml.layers import (
     BatchNorm2D,
     Concatenate,
     Dropout,
+    Embedding,
     LayerNorm,
     Linear,
     Sequential,
@@ -111,6 +112,13 @@ def test_concatenate_roundtrips():
     assert_outputs_roundtrip(
         [X], Concatenate([X, X], axis=1), [np.random.default_rng(0).normal(size=(5, 4))]
     )
+
+
+def test_embedding_roundtrips():
+    ids = pt.lmatrix("ids")
+    embedding = Embedding("emb", n_embeddings=8, n_features=5)
+    embedding.W.set_value(np.random.default_rng(0).normal(size=(8, 5)))
+    assert_outputs_roundtrip([ids], embedding(ids), [np.array([[1, 2, 3], [4, 0, 7]])])
 
 
 def test_multi_output_network_roundtrips():

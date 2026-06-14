@@ -6,9 +6,9 @@ import pytest
 from pytensor.graph.replace import vectorize_graph
 
 from pytensor_ml.activations import ReLU
-from pytensor_ml.layers import BatchNorm2D, Dropout, LayerNorm, Linear, Sequential
-from pytensor_ml.params import collect_trainable_params
+from pytensor_ml.layers import BatchNorm2D, Dropout, LayerNorm, Embedding, Input, Linear, Sequential
 from pytensor_ml.pytensorf import rewrite_for_prediction
+from pytensor_ml.params import collect_trainable_params
 
 floatX = pytensor.config.floatX
 
@@ -95,6 +95,37 @@ def test_invalid_dropout_p_raises():
         ValueError, match=r"Dropout probability has to be between 0 and 1, but got 1\.1"
     ):
         Dropout(name=None, p=1.1)
+
+
+def test_embedding_forward(rng):
+    n_embeddings, n_features = 10, 4
+    embedding = Embedding("emb", n_embeddings, n_features)
+    W_np = rng.normal(size=(n_embeddings, n_features)).astype(floatX)
+    embedding.W.set_value(W_np)
+
+    ids = Input("ids", (2, 3), dtype="int64")  # a batch of index rows
+    out = embedding(ids)
+    assert out.name == "emb_output"
+
+    ids_np = np.array([[1, 2, 3], [4, 5, 6]])
+    res = out.eval({ids: ids_np})
+    np.testing.assert_allclose(res, W_np[ids_np])
+    assert res.shape == (2, 3, n_features)
+
+
+def test_embedding_table_is_trainable(rng):
+    # The OpFromGraph marker must pass the gradient through to the selected rows -- and only
+    # those rows -- so the table trains; the integer indices are non-differentiable.
+    embedding = Embedding("emb", n_embeddings=6, n_features=3)
+    embedding.W.set_value(rng.normal(size=(6, 3)).astype(floatX))
+    ids = pt.lvector("ids")
+    grad_fn = pytensor.function([ids], pytensor.grad((embedding(ids) ** 2).sum(), embedding.W))
+
+    grad = grad_fn(np.array([1, 1, 4]))
+    selected = np.zeros(6, dtype=bool)
+    selected[[1, 4]] = True
+    assert np.any(grad[selected] != 0)
+    assert np.all(grad[~selected] == 0)
 
 
 @pytest.mark.parametrize("n_in", [6, None], ids=["specified", "lazy"])

@@ -67,6 +67,51 @@ class Linear(Layer):
         return out
 
 
+class EmbeddingLayer(LayerOp):
+    __props__ = ("n_embeddings", "n_features")
+
+
+class Embedding(Layer):
+    r"""
+    Lookup-table embedding.
+
+    Map each integer index to a learned row of the ``(n_embeddings, n_features)`` table,
+    appending a trailing feature axis of size ``n_features`` while preserving the shape of the
+    index input.
+
+    Parameters
+    ----------
+    name : str or None
+        Name prefix for the layer's parameters. Defaults to "Embedding" when None.
+    n_embeddings : int
+        Number of rows in the table -- the number of distinct indices it can map.
+    n_features : int
+        Size of each embedding row.
+    """
+
+    def __init__(self, name: str | None, n_embeddings: int, n_features: int):
+        self.name = name if name else "Embedding"
+        self.n_embeddings = n_embeddings
+        self.n_features = n_features
+
+        W_value = np.zeros((n_embeddings, n_features), dtype=config.floatX)
+        self.W = trainable(W_value, f"{self.name}_W")
+
+    def __call__(self, ids: pt.TensorLike) -> pt.TensorVariable:
+        ids = pt.as_tensor(ids)
+
+        out = EmbeddingLayer(
+            inputs=[ids, self.W],
+            outputs=[self.W[ids]],
+            name=self.name,
+            n_embeddings=self.n_embeddings,
+            n_features=self.n_features,
+        )(ids, self.W)
+        out.name = f"{self.name}_output"
+
+        return out
+
+
 class DropoutLayer(LayerOp):
     __props__ = ("p",)
 
@@ -351,11 +396,23 @@ class LayerNorm(Layer):
         return X_transformed
 
 
-def Input(name: str, shape: tuple[int]) -> pt.TensorLike:
+def Input(name: str, shape: tuple[int, ...], dtype: str | None = None) -> pt.TensorVariable:
+    """
+    Create a named symbolic input tensor with a fully static shape.
+
+    Parameters
+    ----------
+    name : str
+        Name of the input variable.
+    shape : tuple of int
+        Static size of each dimension. Raise ``ValueError`` if any entry is not an integer.
+    dtype : str or None
+        Data type of the input. Defaults to ``floatX`` when None.
+    """
     if not all(isinstance(dim, int) for dim in shape):
         raise ValueError("All dimensions must be integers")
 
-    return pt.tensor(name=name, shape=shape)
+    return pt.tensor(name=name, shape=shape, dtype=dtype)
 
 
 def Sequential(*layers: Callable) -> Callable:
@@ -375,6 +432,7 @@ __all__ = [
     "BatchNorm2D",
     "Concatenate",
     "Dropout",
+    "Embedding",
     "Input",
     "LayerNorm",
     "Linear",
