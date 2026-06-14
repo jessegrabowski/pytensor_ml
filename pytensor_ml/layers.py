@@ -10,7 +10,7 @@ from pytensor import config
 from pytensor.compile.sharedvalue import shared
 
 from pytensor_ml.params import non_trainable, trainable
-from pytensor_ml.pytensorf import LayerOp
+from pytensor_ml.pytensorf import LayerOp, UnaryLayerOp
 
 
 def shape_to_str(shape):
@@ -22,7 +22,7 @@ class Layer(ABC):
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable: ...
 
 
-class LinearLayer(LayerOp):
+class LinearLayer(UnaryLayerOp):
     __props__ = ("n_in", "n_out", "bias")
 
 
@@ -40,7 +40,7 @@ class Linear(Layer):
             b_value = np.zeros(n_out, dtype=config.floatX)
             self.b = trainable(b_value, f"{self.name}_b")
 
-    def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
+    def __call__(self, X: pt.TensorLike) -> pt.TensorVariable:
         X = pt.as_tensor(X)
 
         init_st_shape = shape_to_str(X.type.shape)
@@ -67,7 +67,7 @@ class Linear(Layer):
         return out
 
 
-class EmbeddingLayer(LayerOp):
+class EmbeddingLayer(UnaryLayerOp):
     __props__ = ("n_embeddings", "n_features")
 
 
@@ -112,7 +112,7 @@ class Embedding(Layer):
         return out
 
 
-class DropoutLayer(LayerOp):
+class DropoutLayer(UnaryLayerOp):
     __props__ = ("p",)
 
 
@@ -124,7 +124,7 @@ class Dropout(Layer):
         self.p = p
         self.rng = shared(np.random.default_rng(random_state))
 
-    def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
+    def __call__(self, X: pt.TensorLike) -> pt.TensorVariable:
         X = pt.as_tensor(X)
         p = pt.as_tensor(self.p, dtype=config.floatX)
         _, mask = ptr.bernoulli(p=1 - p, size=X.shape, rng=self.rng, return_next_rng=True)
@@ -148,11 +148,11 @@ class BatchNormLayer(LayerOp):
         return {1: 3, 2: 4}
 
 
-class NoRunningStatsBatchNormLayer(LayerOp):
+class NoRunningStatsBatchNormLayer(UnaryLayerOp):
     __props__ = ("n_in", "epsilon", "momentum", "affine")
 
 
-class PredictionBatchNormLayer(LayerOp):
+class PredictionBatchNormLayer(UnaryLayerOp):
     __props__ = ("n_in", "epsilon", "momentum", "affine")
 
 
@@ -249,7 +249,7 @@ class BatchNorm2D(Layer):
 
         self.initialized = True
 
-    def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
+    def __call__(self, X: pt.TensorLike) -> pt.TensorVariable:
         X = pt.as_tensor(X)
         inputs = [X]
 
@@ -297,6 +297,8 @@ class BatchNorm2D(Layer):
 
             X_transformed = batch_norm_op(*inputs)
 
+        # BatchNormLayer is multi-output; narrow the normalized tensor for the single-tensor return.
+        assert isinstance(X_transformed, pt.TensorVariable)
         X_transformed.name = f"{self.name}_output"
 
         return X_transformed
