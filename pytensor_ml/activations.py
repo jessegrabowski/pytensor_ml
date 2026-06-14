@@ -8,6 +8,16 @@ class Activation(Layer): ...
 
 
 class ReLU(Activation):
+    r"""
+    Rectified Linear Unit.
+
+    Compute the positive part of the input:
+
+    .. math::
+
+        \mathrm{ReLU}(x) = \max(0, x).
+    """
+
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.maximum(0, x)
         out.name = "ReLU"
@@ -15,6 +25,22 @@ class ReLU(Activation):
 
 
 class LeakyReLU(Activation):
+    r"""
+    Leaky Rectified Linear Unit.
+
+    Replace ReLU's flat negative branch with a small negative slope, so negative inputs keep a
+    nonzero gradient:
+
+    .. math::
+
+        \mathrm{LeakyReLU}(x) = \begin{cases} x & x > 0 \\ \alpha x & x \le 0 \end{cases}
+
+    Parameters
+    ----------
+    negative_slope : float, optional
+        The slope :math:`\alpha` applied to negative inputs. Default is 0.01.
+    """
+
     def __init__(self, negative_slope: pt.TensorLike = 0.01):
         self.negative_slope = negative_slope
 
@@ -25,6 +51,16 @@ class LeakyReLU(Activation):
 
 
 class Tanh(Activation):
+    r"""
+    Hyperbolic tangent.
+
+    Squash the input to :math:`(-1, 1)`:
+
+    .. math::
+
+        \tanh(x) = \frac{e^x - e^{-x}}{e^x + e^{-x}}.
+    """
+
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.tanh(x)
         out.name = "TanH"
@@ -32,6 +68,16 @@ class Tanh(Activation):
 
 
 class Sigmoid(Activation):
+    r"""
+    Logistic sigmoid.
+
+    Squash the input to :math:`(0, 1)`:
+
+    .. math::
+
+        \sigma(x) = \frac{1}{1 + e^{-x}}.
+    """
+
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.sigmoid(x)
         out.name = "Sigmoid"
@@ -39,6 +85,16 @@ class Sigmoid(Activation):
 
 
 class SoftPlus(Activation):
+    r"""
+    Softplus activation.
+
+    Compute a smooth approximation to ReLU:
+
+    .. math::
+
+        \mathrm{softplus}(x) = \log(1 + e^x).
+    """
+
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.softplus(x)
         out.name = "SoftPlus"
@@ -110,6 +166,21 @@ class Swish(Activation):
 
 
 class Softmax(Activation):
+    r"""
+    Softmax activation.
+
+    Normalize the input along one axis into a probability distribution:
+
+    .. math::
+
+        \mathrm{softmax}(x)_i = \frac{e^{x_i}}{\sum_j e^{x_j}}.
+
+    Parameters
+    ----------
+    axis : int, optional
+        The axis along which the values sum to one. Default is -1.
+    """
+
     def __init__(self, axis: int = -1):
         self.axis = axis
 
