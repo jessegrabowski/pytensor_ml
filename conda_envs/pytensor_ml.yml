@@ -29,4 +29,3 @@ dependencies:
   # developer tools
   - pre-commit
   - mypy
-  - polars

@@ -8,7 +8,6 @@ on:
       - ".github/workflows/mypy.yml"
       - "pytensor_ml/**"
       - "scripts/run_mypy.py"
-      - "scripts/mypy-failing.txt"
       - "pyproject.toml"
       - "conda_envs/**"
 
@@ -55,4 +54,4 @@ jobs:
     - name: Run mypy
       run: |
         conda activate pytensor_ml
-        python ./scripts/run_mypy.py --verbose
+        python ./scripts/run_mypy.py
