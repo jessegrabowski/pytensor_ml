@@ -75,7 +75,8 @@ def find_rng_nodes(variables: Iterable[Variable]) -> list[RandomGeneratorSharedV
 def reseed_rngs(rngs: Sequence[SharedVariable], seed: SeedSequenceSeed) -> None:
     """Replace each shared RNG with a fresh generator seeded from ``seed``."""
     bit_generators = [
-        np.random.PCG64(sub_seed) for sub_seed in np.random.SeedSequence(seed).spawn(len(rngs))
+        np.random.PCG64(sub_seed)
+        for sub_seed in np.random.SeedSequence(seed).spawn(len(rngs))  # type: ignore[arg-type]
     ]
     for rng, bit_generator in zip(rngs, bit_generators):
         rng.set_value(np.random.Generator(bit_generator), borrow=True)
