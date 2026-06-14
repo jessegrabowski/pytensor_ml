@@ -8,7 +8,7 @@ import pytest
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor.random.op import RandomVariable
 
-from pytensor_ml.activations import LeakyReLU, ReLU, Sigmoid, Softmax, SoftPlus, Tanh
+from pytensor_ml.activations import GELU, LeakyReLU, ReLU, Sigmoid, Softmax, SoftPlus, Tanh
 from pytensor_ml.json_serialize import (
     deserialize_graph,
     op_from_json,
@@ -18,7 +18,16 @@ from pytensor_ml.json_serialize import (
 from pytensor_ml.layers import BatchNorm2D, Concatenate, Dropout, Linear, Sequential, Squeeze
 from pytensor_ml.params import collect_shared_variables, collect_trainable_params
 
-ALL_ACTIVATIONS = [ReLU(), LeakyReLU(), Tanh(), Sigmoid(), SoftPlus(), Softmax()]
+ALL_ACTIVATIONS = [
+    ReLU(),
+    LeakyReLU(),
+    Tanh(),
+    Sigmoid(),
+    SoftPlus(),
+    Softmax(),
+    GELU(approximate=False),
+    GELU(approximate=True),
+]
 
 
 def assert_outputs_roundtrip(data_inputs, outputs, data_values):
@@ -44,7 +53,13 @@ def initialized_network(*layers, seed=0):
     return X, output
 
 
-@pytest.mark.parametrize("activation", ALL_ACTIVATIONS, ids=lambda a: type(a).__name__)
+def _activation_id(activation):
+    if isinstance(activation, GELU) and activation.approximate:
+        return "GELU_tanh"
+    return type(activation).__name__
+
+
+@pytest.mark.parametrize("activation", ALL_ACTIVATIONS, ids=_activation_id)
 def test_every_activation_roundtrips(activation):
     X, output = initialized_network(Linear("fc1", 4, 8), activation, Linear("fc2", 8, 4))
     assert_outputs_roundtrip([X], output, [np.random.default_rng(1).normal(size=(5, 4))])
