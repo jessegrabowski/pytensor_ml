@@ -51,7 +51,6 @@ dev = [
     "pytest-cov",
     "scikit-learn",
     "mypy",
-    "polars"
 ]
 
 [tool.hatch.version]
