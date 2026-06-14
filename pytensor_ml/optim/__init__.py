@@ -8,6 +8,7 @@ from pytensor_ml.optim.rules import (
     adamw_updates,
     sgd_updates,
 )
+from pytensor_ml.optim.train import compile_train
 from pytensor_ml.optim.transform import add_weight_decay, scale, scale_by_schedule, trace
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "chain",
     "clip_by_global_norm",
     "clip_by_value",
+    "compile_train",
     "get_gradients",
     "scale",
     "scale_by_schedule",
