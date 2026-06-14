@@ -12,7 +12,7 @@ from pytensor_ml.params import (
     collect_non_trainable_updates,
     collect_trainable_params,
 )
-from pytensor_ml.pytensorf import function, rewrite_for_prediction
+from pytensor_ml.pytensorf import compile_predict
 from pytensor_ml.state import InitializationScheme, OptimizerState
 
 
@@ -95,11 +95,8 @@ class Model:
 
     def predict(self, X_values: np.ndarray) -> np.ndarray:
         if self._predict_fn is None:
-            y_pred = rewrite_for_prediction(self.y)
-            self._predict_fn = function(
-                [self.X],
-                y_pred,
-                **self._compile_kwargs,
+            self._predict_fn = compile_predict(
+                self.y, inputs=[self.X], compile_kwargs=self._compile_kwargs
             )
 
         result = self._predict_fn(X_values)
