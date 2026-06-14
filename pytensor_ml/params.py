@@ -104,7 +104,7 @@ def collect_graph_inputs(
 
 
 def collect_shared_variables(
-    outputs: TensorVariable | Sequence[TensorVariable],
+    outputs: Variable | Sequence[Variable],
 ) -> list[SharedVariable]:
     """
     Collect all SharedVariables from a computation graph.
@@ -208,7 +208,7 @@ def collect_non_trainable_updates(
 
 
 def collect_data_inputs(
-    outputs: TensorVariable | Sequence[TensorVariable],
+    outputs: Variable | Sequence[Variable],
 ) -> list[TensorVariable]:
     """
     Extract data inputs from a graph (inputs that are not SharedVariables).

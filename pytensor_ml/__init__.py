@@ -3,6 +3,7 @@ import sys
 
 from pytensor_ml._version import __version__
 from pytensor_ml.checkpoint import load_state, save_state
+from pytensor_ml.pretrained import from_pretrained, load_network, save_network, save_pretrained
 from pytensor_ml.pytensorf import function
 
 _log = logging.getLogger(__name__)
@@ -14,4 +15,13 @@ if not logging.root.handlers:
         _log.addHandler(handler)
 
 
-__all__ = ["__version__", "function", "load_state", "save_state"]
+__all__ = [
+    "__version__",
+    "from_pretrained",
+    "function",
+    "load_network",
+    "load_state",
+    "save_network",
+    "save_pretrained",
+    "save_state",
+]
