@@ -6,7 +6,6 @@ channels:
 dependencies:
   - python>=3.12
   - pytensor>=3.0.0,<4.0.0
-  - pymc>=6.0.0,<7.0.0
   - numpy
   - scikit-learn
 
