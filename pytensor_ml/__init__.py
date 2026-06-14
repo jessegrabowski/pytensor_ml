@@ -2,6 +2,7 @@ import logging
 import sys
 
 from pytensor_ml._version import __version__
+from pytensor_ml.checkpoint import load_state, save_state
 from pytensor_ml.pytensorf import function
 
 _log = logging.getLogger(__name__)
@@ -13,4 +14,4 @@ if not logging.root.handlers:
         _log.addHandler(handler)
 
 
-__all__ = ["__version__", "function"]
+__all__ = ["__version__", "function", "load_state", "save_state"]
