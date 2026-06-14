@@ -257,6 +257,100 @@ class BatchNorm2D(Layer):
         return X_transformed
 
 
+class LayerNormLayer(LayerOp):
+    __props__ = ("n_in", "epsilon", "affine")
+
+
+class LayerNorm(Layer):
+    r"""
+    Layer normalization over the last (feature) axis.
+
+    Standardize each sample independently across its features, then optionally apply a learned
+    affine transform:
+
+    .. math::
+
+        y = \frac{x - \mathrm{E}[x]}{\sqrt{\mathrm{Var}[x] + \epsilon}} \cdot \gamma + \beta,
+
+    where the mean and (biased) variance are taken over the last axis. The statistics depend only on
+    the current sample, so there are no running statistics and no train/eval distinction.
+
+    Parameters
+    ----------
+    name : str, optional
+        Name used as a prefix for the layer's parameters. Default is "LayerNorm".
+    n_in : int, optional
+        Size of the normalized feature axis. Inferred from the input's last dimension on the first
+        call when omitted.
+    epsilon : float, optional
+        Constant :math:`\epsilon` added to the variance for numerical stability. Default is 1e-5.
+    affine : bool, optional
+        Apply the learned scale :math:`\gamma` and shift :math:`\beta`. Default is True.
+    """
+
+    def __init__(
+        self,
+        name: str | None = None,
+        n_in: int | None = None,
+        epsilon: float = 1e-5,
+        affine: bool = True,
+    ):
+        self.name = name if name else "LayerNorm"
+        self.n_in = n_in
+        self.epsilon = epsilon
+        self.affine = affine
+
+        self.scale = None
+        self.loc = None
+
+        self.initialized = False
+        self._initialize_params(None)
+
+    def _initialize_params(self, X: pt.TensorLike | None):
+        if self.initialized:
+            return
+
+        if self.n_in is None and X is None:
+            return
+
+        n_in = X.type.shape[-1] if X is not None else self.n_in
+
+        if self.affine:
+            self.scale = trainable(np.ones(n_in, dtype=config.floatX), f"{self.name}_scale")
+            self.loc = trainable(np.zeros(n_in, dtype=config.floatX), f"{self.name}_loc")
+
+        self.initialized = True
+
+    def __call__(self, X: pt.TensorLike) -> pt.TensorLike:
+        X = pt.as_tensor(X)
+        self._initialize_params(X)
+
+        mu = X.mean(axis=-1, keepdims=True)
+        # Biased variance (ddof=0), matching torch.nn.LayerNorm; pretrained weights assume it. Do
+        # not "correct" to the unbiased estimator -- it would diverge from every pretrained model.
+        sigma_sq = X.var(axis=-1, keepdims=True)
+        X_normalized = (X - mu) / pt.sqrt(sigma_sq + self.epsilon)
+
+        inputs = [X]
+        if self.affine:
+            X_rescaled = X_normalized * self.scale + self.loc
+            inputs.extend([self.scale, self.loc])
+        else:
+            X_rescaled = X_normalized
+
+        X_transformed = LayerNormLayer(
+            inputs=inputs,
+            outputs=[X_rescaled],
+            name=self.name,
+            n_in=self.n_in,
+            epsilon=self.epsilon,
+            affine=self.affine,
+        )(*inputs)
+        X_transformed.name = f"{self.name}_output"
+
+        return X_transformed
+
+
 def Input(name: str, shape: tuple[int]) -> pt.TensorLike:
     if not all(isinstance(dim, int) for dim in shape):
         raise ValueError("All dimensions must be integers")
@@ -277,4 +371,13 @@ Squeeze = pt.squeeze
 Concatenate = pt.concatenate
 
 
-__all__ = ["BatchNorm2D", "Concatenate", "Dropout", "Input", "Linear", "Sequential", "Squeeze"]
+__all__ = [
+    "BatchNorm2D",
+    "Concatenate",
+    "Dropout",
+    "Input",
+    "LayerNorm",
+    "Linear",
+    "Sequential",
+    "Squeeze",
+]

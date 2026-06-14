@@ -3,7 +3,11 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from pytensor_ml.layers import BatchNorm2D, Dropout, Linear, Sequential
+from pytensor.graph.replace import vectorize_graph
+
+from pytensor_ml.activations import ReLU
+from pytensor_ml.layers import BatchNorm2D, Dropout, LayerNorm, Linear, Sequential
+from pytensor_ml.params import collect_trainable_params
 from pytensor_ml.pytensorf import rewrite_for_prediction
 
 floatX = pytensor.config.floatX
@@ -117,6 +121,72 @@ def test_batch_norm_2d_forward(n_in, rng):
     expected = expected * gamma_np + beta_np
 
     np.testing.assert_allclose(res, expected, rtol=1e-5)
+
+
+# Rank > 2 is the transformer case (batch, seq, d_model): the last axis is normalized and the affine
+# parameters broadcast over every leading dimension.
+@pytest.mark.parametrize("batch_shape", [(10,), (2, 4)], ids=["2d", "3d"])
+@pytest.mark.parametrize("n_in", [6, None], ids=["specified", "lazy"])
+def test_layer_norm_forward(n_in, batch_shape, rng):
+    X = pt.tensor("X", shape=(*(None,) * len(batch_shape), 6))
+    layer_norm = LayerNorm(name="LayerNorm_1", n_in=n_in)
+    out = layer_norm(X)
+    assert out.name == "LayerNorm_1_output"
+
+    X_np = rng.normal(size=(*batch_shape, 6)).astype(floatX)
+    gamma_np = rng.normal(size=(6,)).astype(floatX)
+    beta_np = rng.normal(size=(6,)).astype(floatX)
+    layer_norm.scale.set_value(gamma_np)
+    layer_norm.loc.set_value(beta_np)
+
+    res = out.eval({X: X_np})
+    mean_np = X_np.mean(axis=-1, keepdims=True)
+    var_np = X_np.var(axis=-1, keepdims=True)
+    expected = (X_np - mean_np) / np.sqrt(var_np + layer_norm.epsilon) * gamma_np + beta_np
+    np.testing.assert_allclose(res, expected, rtol=1e-5)
+
+
+def test_layer_norm_prediction_matches_training(rng):
+    # LayerNorm normalizes over per-sample statistics, identical in train and eval, so unlike
+    # BatchNorm it needs no prediction rewrite: rewrite_for_prediction leaves its output unchanged.
+    X = pt.tensor("X", shape=(None, 6))
+    layer_norm = LayerNorm("ln", n_in=6)
+    out = layer_norm(X)
+    layer_norm.scale.set_value(rng.normal(size=6).astype(floatX))
+    layer_norm.loc.set_value(rng.normal(size=6).astype(floatX))
+
+    X_np = rng.normal(size=(10, 6)).astype(floatX)
+    np.testing.assert_allclose(
+        rewrite_for_prediction(out).eval({X: X_np}), out.eval({X: X_np}), rtol=1e-6
+    )
+
+
+def test_vectorize_graph_batches_independent_predictions(rng):
+    # A model built for a single sample must vectorize over a batch through the OpFromGraph-based
+    # layers (Linear, LayerNorm); the batched result must match looping the single-sample graph.
+    x = pt.vector("x", shape=(4,))
+    net = Sequential(Linear("fc1", 4, 8), ReLU(), LayerNorm("ln", n_in=8), Linear("fc2", 8, 3))
+    out = net(x)
+    for parameter in collect_trainable_params(out):
+        parameter.set_value(rng.normal(size=parameter.get_value().shape).astype(floatX))
+
+    X = pt.matrix("X", shape=(None, 4))
+    f_single = pytensor.function([x], out)
+    f_batch = pytensor.function([X], vectorize_graph(out, {x: X}))
+
+    X_np = rng.normal(size=(5, 4)).astype(floatX)
+    np.testing.assert_allclose(f_batch(X_np), np.stack([f_single(row) for row in X_np]), rtol=1e-5)
+
+
+def test_layer_norm_no_affine_standardizes_each_row(rng):
+    X = pt.tensor("X", shape=(None, 8))
+    out = LayerNorm(name="LayerNorm_1", n_in=8, affine=False)(X)
+
+    X_np = rng.normal(loc=3.0, scale=2.0, size=(10, 8)).astype(floatX)
+    res = out.eval({X: X_np})
+
+    np.testing.assert_allclose(res.mean(axis=-1), 0.0, atol=1e-5)
+    np.testing.assert_allclose(res.var(axis=-1), 1.0, rtol=1e-3)
 
 
 def test_batch_norm_2d_learns_population_stats():
