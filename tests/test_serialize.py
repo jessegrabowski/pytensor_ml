@@ -9,6 +9,7 @@ from pytensor.graph.traversal import ancestors
 from pytensor.tensor.random.op import RandomVariable
 
 from pytensor_ml.activations import GELU, LeakyReLU, ReLU, Sigmoid, Softmax, SoftPlus, Swish, Tanh
+from pytensor_ml.attention import scaled_dot_product_attention
 from pytensor_ml.json_serialize import (
     deserialize_graph,
     op_from_json,
@@ -26,6 +27,8 @@ from pytensor_ml.layers import (
     Squeeze,
 )
 from pytensor_ml.params import collect_shared_variables, collect_trainable_params
+
+floatX = pytensor.config.floatX
 
 ALL_ACTIVATIONS = [
     ReLU(),
@@ -45,7 +48,9 @@ def assert_outputs_roundtrip(data_inputs, outputs, data_values):
     """Serialize the graph of ``outputs`` to JSON and back, and check the rebuilt graph computes the same."""
     output_list = outputs if isinstance(outputs, list) else [outputs]
     shared = collect_shared_variables(output_list)
-    blob = json.dumps(serialize_graph([*data_inputs, *shared], output_list))
+    # allow_nan=False enforces strict, portable JSON: inf/nan must go through sentinels, not the
+    # non-standard Infinity/NaN tokens a lenient parser would emit.
+    blob = json.dumps(serialize_graph([*data_inputs, *shared], output_list), allow_nan=False)
     rebuilt_inputs, rebuilt_outputs = deserialize_graph(json.loads(blob))
 
     original = pytensor.function(data_inputs, output_list)  # shared inputs captured
@@ -119,6 +124,17 @@ def test_embedding_roundtrips():
     embedding = Embedding("emb", n_embeddings=8, n_features=5)
     embedding.W.set_value(np.random.default_rng(0).normal(size=(8, 5)))
     assert_outputs_roundtrip([ids], embedding(ids), [np.array([[1, 2, 3], [4, 0, 7]])])
+
+
+@pytest.mark.parametrize("scale", [None, 0.5], ids=["default_scale", "custom_scale"])
+@pytest.mark.parametrize("is_causal", [False, True], ids=["full", "causal"])
+def test_attention_roundtrips(is_causal, scale):
+    # The causal branch bakes a -inf constant into the graph, exercising the non-finite codec path.
+    rng = np.random.default_rng(0)
+    q, k, v = (pt.tensor(name, shape=(2, 2, 4, 3)) for name in "qkv")
+    output = scaled_dot_product_attention(q, k, v, is_causal=is_causal, scale=scale)
+    values = [rng.normal(size=(2, 2, 4, 3)).astype(floatX) for _ in range(3)]
+    assert_outputs_roundtrip([q, k, v], output, values)
 
 
 def test_multi_output_network_roundtrips():

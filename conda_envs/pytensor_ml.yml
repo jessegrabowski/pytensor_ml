@@ -29,3 +29,8 @@ dependencies:
   # developer tools
   - pre-commit
   - mypy
+
+  # JAX backend for dispatch tests; via pip so Windows pulls CPU wheels instead of conda jaxlib
+  - pip
+  - pip:
+      - jax
