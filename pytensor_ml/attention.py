@@ -185,8 +185,7 @@ class MultiheadAttention(Layer):
 
     def _split_heads(self, x: pt.TensorVariable, n_head: int) -> pt.TensorVariable:
         # (..., seq, n_head * head_dim) -> (..., n_head, seq, head_dim)
-        x = x.reshape((*tuple(x.shape[:-1]), n_head, self.head_dim))
-        return x.swapaxes(-3, -2)
+        return pt.split_dims(x, shape=(n_head, self.head_dim), axis=-1).swapaxes(-3, -2)
 
     def __call__(self, x: pt.TensorLike, mask: pt.TensorLike | None = None) -> pt.TensorVariable:
         x = pt.as_tensor(x)
@@ -200,8 +199,7 @@ class MultiheadAttention(Layer):
         attn = scaled_dot_product_attention(q, k, v, mask=mask, is_causal=self.is_causal)
 
         # (..., n_head, seq, head_dim) -> (..., seq, n_head * head_dim)
-        attn = attn.swapaxes(-3, -2)
-        attn = attn.reshape((*tuple(attn.shape[:-2]), self.n_head * self.head_dim))
+        attn = pt.join_dims(attn.swapaxes(-3, -2), start_axis=-2, n_axes=2)
 
         out = self.out_proj(attn)
         out.name = f"{self.name}_output"

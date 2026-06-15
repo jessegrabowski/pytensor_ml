@@ -60,7 +60,7 @@ def rewrite_batch_stats_to_running_average_stats(
     """
     X, loc, scale, running_mean, running_var = node.inputs
 
-    res = (X - running_mean) / pt.sqrt(running_var + node.op.epsilon)  # type: ignore[operator]
+    res = (X - running_mean) / pt.sqrt(running_var + node.op.epsilon)
     res = loc + res * scale
 
     batch_norm_op = PredictionBatchNormLayer(
@@ -75,7 +75,7 @@ def rewrite_batch_stats_to_running_average_stats(
 
     X_normalized = batch_norm_op(X, loc, scale, running_mean, running_var)
 
-    return [X_normalized, None, None]  # type: ignore[list-item]
+    return [X_normalized, None, None]
 
 
 predict_db.register(
