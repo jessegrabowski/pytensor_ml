@@ -57,13 +57,33 @@ def prop_from_json(value):
     return value
 
 
+def _encode_nonfinite(value):
+    """Replace inf/-inf/nan floats with sentinels. JSON has no literals for them, so a constant such as
+    the causal mask's -inf would serialize to a non-standard ``-Infinity`` token that strict, portable
+    JSON parsers reject."""
+    if isinstance(value, list):
+        return [_encode_nonfinite(item) for item in value]
+    if isinstance(value, float) and not np.isfinite(value):
+        return {"__float__": "nan" if np.isnan(value) else ("inf" if value > 0 else "-inf")}
+    return value
+
+
+def _decode_nonfinite(value):
+    if isinstance(value, list):
+        return [_decode_nonfinite(item) for item in value]
+    if isinstance(value, dict) and "__float__" in value:
+        return float(value["__float__"])
+    return value
+
+
 def const_to_json(constant: Constant) -> dict:
-    return {"type": type_to_json(constant.type), "value": np.asarray(constant.data).tolist()}
+    value = _encode_nonfinite(np.asarray(constant.data).tolist())
+    return {"type": type_to_json(constant.type), "value": value}
 
 
 def const_from_json(const_dict: dict):
     graph_type = type_from_json(const_dict["type"])
-    value = np.asarray(const_dict["value"], dtype=graph_type.dtype)
+    value = np.asarray(_decode_nonfinite(const_dict["value"]), dtype=graph_type.dtype)
     # Use the type-specific constant wrappers: a raw Constant holds an unhashable ndarray and breaks the
     # FrozenApply interning that reconstruction relies on.
     if isinstance(graph_type, ScalarType):
