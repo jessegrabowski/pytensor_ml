@@ -1,5 +1,4 @@
 from pytensor.compile.builders import OpFromGraph, SymbolicOp
-from pytensor.graph.fg import FrozenFunctionGraph
 
 from pytensor_ml.json_serialize import (
     _qualname,
@@ -12,9 +11,9 @@ from pytensor_ml.json_serialize import (
     register_from_json,
 )
 
-# A plain OpFromGraph (and pytensor_ml's LayerOp markers) is an opaque captured subgraph: serialize the
-# inner graph recursively. A SymbolicOp (Softmax, ...) is a named op implemented as an OpFromGraph but fully
-# defined by its __props__ -- it regenerates its own inner graph -- so serialize it as a leaf instead.
+# A SymbolicOp (Softmax, every pytensor_ml LayerOp, ...) is a named op implemented as an OpFromGraph but
+# fully defined by its __props__ and input types -- it regenerates its own inner graph -- so serialize it as
+# a leaf. A plain OpFromGraph is an opaque captured subgraph, so serialize its inner graph recursively.
 
 
 @op_to_json.register(SymbolicOp)
@@ -34,7 +33,7 @@ def _ofg_to_json(op: OpFromGraph) -> dict:
         "inline": bool(op.is_inline),
         "name": op.name,
         "props": {name: prop_to_json(getattr(op, name)) for name in getattr(op, "__props__", ())},
-        "inner": graph_to_json(FrozenFunctionGraph(op.inner_inputs, op.inner_outputs)),
+        "inner": graph_to_json(op.inner_inputs, op.inner_outputs),
     }
 
 
