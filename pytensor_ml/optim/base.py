@@ -13,7 +13,7 @@ from pytensor_ml.pytensorf import rewrite_pregrad
 # An optimizer parameter is a shared tensor variable: it can index the updates dict (it is a shared variable),
 # take part in tensor arithmetic, and expose its concrete value via ``get_value``. Optimizer state buffers share
 # the same type. Aliased for readable signatures.
-Parameter = TensorSharedVariable
+type Parameter = TensorSharedVariable
 
 # A mapping from a shared variable to the symbolic expression for its next value. This is pytensor's native
 # `updates` contract, and it is the single currency every rule and transform in this package speaks: it carries
