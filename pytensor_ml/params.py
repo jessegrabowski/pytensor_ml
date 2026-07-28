@@ -1,16 +1,7 @@
-from collections.abc import Sequence
-
 import numpy as np
 
-from pytensor.compile.sharedvalue import SharedVariable
-from pytensor.graph import graph_inputs
-from pytensor.graph.basic import Constant, Variable
-from pytensor.graph.traversal import ancestors
-from pytensor.tensor import TensorVariable
 from pytensor.tensor.sharedvar import TensorSharedVariable
 from pytensor.tensor.type import TensorType
-
-from pytensor_ml.ops import StatefulOp
 
 
 class TrainableParameter(TensorSharedVariable):
@@ -21,208 +12,45 @@ class NonTrainableParameter(TensorSharedVariable):
     """Marker class for non-trainable state (running mean/var in BatchNorm)."""
 
 
+def _make_parameter[T: TensorSharedVariable](
+    parameter_type: type[T], value, name, shape, strict, **kwargs
+) -> T:
+    value = np.asarray(value)
+    if shape is None:
+        shape = value.shape
+    ttype = TensorType(dtype=str(value.dtype), shape=shape)
+    return parameter_type(name=name, type=ttype, value=value, strict=strict, **kwargs)
+
+
 def trainable(value, name=None, shape=None, strict=False, **kwargs) -> TrainableParameter:
     """
-    Create a trainable parameter SharedVariable.
+    Create a shared variable marked as a trainable parameter.
 
-    These are simply pytensor SharedVariables that are marked with a different class for easy identification during
-    graph traversal. They do not do anything special on their own.
+    The marker class is the only difference from a plain pytensor shared variable. It exists so that graph
+    traversal can tell parameters apart from other shared state; it adds no behavior of its own.
 
     Parameters
     ----------
     value : array-like
         Initial value for the parameter.
     name : str, optional
-        Name for the parameter.
+        Name for the parameter. Optimizer state and checkpoints are matched by name, so prefer giving one.
     shape : tuple, optional
-        Static shape for the variable. If None, uses the concrete shape from value. Pass a tuple with None elements
-        for dynamic dimensions, e.g., shape=(None, None) for fully dynamic 2D tensor.
+        Static shape for the variable. Defaults to the concrete shape of ``value``; pass a tuple with None
+        entries for dynamic dimensions, e.g. ``(None, None)`` for a fully dynamic matrix.
     strict : bool, optional
         If True, the value must exactly match the dtype.
     **kwargs
         Additional arguments passed to the SharedVariable constructor.
     """
-    value = np.asarray(value)
-    if shape is None:
-        shape = value.shape
-    ttype = TensorType(dtype=str(value.dtype), shape=shape)
-    return TrainableParameter(name=name, type=ttype, value=value, strict=strict, **kwargs)
+    return _make_parameter(TrainableParameter, value, name, shape, strict, **kwargs)
 
 
 def non_trainable(value, name=None, shape=None, strict=False, **kwargs) -> NonTrainableParameter:
     """
-    Create a non-trainable parameter SharedVariable.
+    Create a shared variable marked as non-trainable state, such as batch norm's running statistics.
 
-    These are simply pytensor SharedVariables that are marked with a different class for easy identification during
-    graph traversal. They do not do anything special on their own.
-
-    Parameters
-    ----------
-    value : array-like
-        Initial value for the parameter.
-    name : str, optional
-        Name for the parameter.
-    shape : tuple, optional
-        Static shape for the variable. If None, uses the concrete shape from value. Pass a tuple with None elements
-        for dynamic dimensions, e.g., shape=(None, None) for fully dynamic 2D tensor.
-    strict : bool, optional
-        If True, the value must exactly match the dtype.
-    **kwargs
-        Additional arguments passed to the SharedVariable constructor.
+    Takes the same arguments as :func:`trainable`; only the marker class differs, which is what keeps these
+    out of the set an optimizer updates.
     """
-    value = np.asarray(value)
-    if shape is None:
-        shape = value.shape
-    ttype = TensorType(dtype=str(value.dtype), shape=shape)
-    return NonTrainableParameter(name=name, type=ttype, value=value, strict=strict, **kwargs)
-
-
-def collect_graph_inputs(
-    outputs: TensorVariable | Sequence[TensorVariable],
-) -> list[TensorVariable]:
-    """
-    Collect all non-constant, non-shared graph inputs.
-
-    Parameters
-    ----------
-    outputs : TensorVariable or Sequence of TensorVariable
-        One or more graph outputs to trace back from.
-
-    Returns
-    -------
-    graph_inputs : list of TensorVariable
-        All graph inputs that are not Constants or SharedVariables.
-    """
-    if isinstance(outputs, Variable):
-        outputs = [outputs]
-
-    return list(
-        filter(
-            lambda var: not isinstance(var, Constant | SharedVariable),  # type: ignore[arg-type]
-            graph_inputs(list(outputs)),
-        )
-    )
-
-
-def collect_shared_variables(
-    outputs: Variable | Sequence[Variable],
-) -> list[SharedVariable]:
-    """
-    Collect all SharedVariables from a computation graph.
-
-    Parameters
-    ----------
-    outputs : TensorVariable or Sequence of TensorVariable
-        One or more graph outputs to trace back from.
-
-    Returns
-    -------
-    shared_vars : list of SharedVariable
-        All SharedVariables in the graph.
-    """
-    if isinstance(outputs, Variable):
-        outputs = [outputs]
-
-    return [var for var in graph_inputs(list(outputs)) if isinstance(var, SharedVariable)]
-
-
-def collect_trainable_params(
-    outputs: TensorVariable | Sequence[TensorVariable],
-) -> list[TrainableParameter]:
-    """
-    Extract trainable parameters from a computation graph.
-
-    Parameters
-    ----------
-    outputs : TensorVariable or Sequence of TensorVariable
-        One or more graph outputs to trace back from.
-
-    Returns
-    -------
-    trainable_params : list of TrainableParameter
-        All TrainableParameter SharedVariables in the graph.
-    """
-    if isinstance(outputs, Variable):
-        outputs = [outputs]
-
-    result: list[TrainableParameter] = [
-        var for var in graph_inputs(list(outputs)) if isinstance(var, TrainableParameter)
-    ]
-    return result
-
-
-def collect_non_trainable_params(
-    outputs: TensorVariable | Sequence[TensorVariable],
-) -> list[NonTrainableParameter]:
-    """
-    Extract non-trainable parameters from a computation graph.
-
-    Parameters
-    ----------
-    outputs : TensorVariable or Sequence of TensorVariable
-        One or more graph outputs to trace back from.
-
-    Returns
-    -------
-    non_trainable_params : list of NonTrainableParameter
-        All NonTrainableParameter SharedVariables in the graph.
-    """
-    if isinstance(outputs, Variable):
-        outputs = [outputs]
-
-    return [var for var in graph_inputs(list(outputs)) if isinstance(var, NonTrainableParameter)]
-
-
-def collect_non_trainable_updates(
-    outputs: TensorVariable | Sequence[TensorVariable],
-) -> dict[NonTrainableParameter, TensorVariable]:
-    """
-    Extract non-trainable update pairs from stateful ops.
-
-    These are state variables that need to be updated during training but are not subject to gradient-based
-    optimization (e.g., running mean/variance in batch normalization).
-
-    Parameters
-    ----------
-    outputs
-        One or more graph outputs to trace back from.
-
-    Returns
-    -------
-    non_trainable_updates : dict
-        Mapping from NonTrainableParameter to its new value, for every update an op declares through
-        :meth:`~pytensor_ml.ops.StatefulOp.update_map`.
-    """
-    if isinstance(outputs, Variable):
-        outputs = [outputs]
-
-    updates: dict[NonTrainableParameter, TensorVariable] = {}
-    for ancestor in ancestors(list(outputs)):
-        node = ancestor.owner
-        if node is not None and isinstance(node.op, StatefulOp):
-            for output_idx, input_idx in node.op.update_map().items():
-                old_value = node.inputs[input_idx]
-                new_value = node.outputs[output_idx]
-                if isinstance(old_value, NonTrainableParameter):
-                    updates[old_value] = new_value
-
-    return updates
-
-
-def collect_data_inputs(
-    outputs: Variable | Sequence[Variable],
-) -> list[TensorVariable]:
-    """
-    Extract data inputs from a graph (inputs that are not SharedVariables).
-
-    Parameters
-    ----------
-    outputs : TensorVariable or Sequence of TensorVariable
-        One or more graph outputs to trace back from.
-
-    Returns
-    -------
-    data_inputs : list of TensorVariable
-        Graph inputs that are not SharedVariables (i.e., data like X, y_true).
-    """
-    return collect_graph_inputs(outputs)  # type: ignore[arg-type]
+    return _make_parameter(NonTrainableParameter, value, name, shape, strict, **kwargs)

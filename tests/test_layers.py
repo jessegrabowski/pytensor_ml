@@ -1,3 +1,5 @@
+import importlib
+
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
@@ -5,10 +7,11 @@ import pytest
 
 from pytensor.graph.replace import vectorize_graph
 
+import pytensor_ml.layers
+
 from pytensor_ml.activations import ReLU
 from pytensor_ml.layers import BatchNorm2D, Dropout, Embedding, Input, LayerNorm, Linear, Sequential
-from pytensor_ml.params import collect_trainable_params
-from pytensor_ml.pytensorf import rewrite_for_prediction
+from pytensor_ml.pytensorf import collect_trainable_params, rewrite_for_prediction
 
 floatX = pytensor.config.floatX
 
@@ -62,7 +65,6 @@ def test_sequential(rng):
     W2_np = rng.normal(size=(3, 1)).astype(floatX)
     b2_np = rng.normal(size=(1,)).astype(floatX)
 
-    # Set SharedVariable values directly
     linear1.W.set_value(W1_np)
     linear1.b.set_value(b1_np)
     linear2.W.set_value(W2_np)
@@ -270,7 +272,6 @@ def test_batch_norm_2d_learns_population_stats():
     np.testing.assert_allclose(running_mean_val, 3.2, rtol=1e-1, atol=1e-1)
     np.testing.assert_allclose(np.sqrt(running_var_val), 6.2, rtol=1e-1, atol=1e-1)
 
-    # Check that after rewrite, the population statistics are used
     X_normalized_pred = rewrite_for_prediction(X_normalized)
     f_pred = pytensor.function([X], X_normalized_pred)
     data = np.random.normal(loc=3.2, scale=6.2, size=(100, 32)).astype(X.type.dtype)
@@ -281,3 +282,24 @@ def test_batch_norm_2d_learns_population_stats():
         rtol=1e-6,
         atol=1e-6,
     )
+
+
+@pytest.mark.parametrize(
+    "op_name, submodule",
+    [
+        ("LinearLayer", "linear"),
+        ("EmbeddingLayer", "embedding"),
+        ("DropoutLayer", "dropout"),
+        ("BatchNormLayer", "norm"),
+        ("NoRunningStatsBatchNormLayer", "norm"),
+        ("PredictionBatchNormLayer", "norm"),
+        ("LayerNormLayer", "norm"),
+    ],
+)
+def test_marker_ops_stay_reachable_from_the_package(op_name, submodule):
+    # deserialize_graph resolves an op's recorded import path with getattr on this package, so these
+    # bindings are load-bearing rather than convenience re-exports.
+    from_package = getattr(pytensor_ml.layers, op_name)
+    from_submodule = getattr(importlib.import_module(f"pytensor_ml.layers.{submodule}"), op_name)
+
+    assert from_package is from_submodule
