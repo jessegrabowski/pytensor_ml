@@ -2,25 +2,12 @@ import numpy as np
 import pytensor.tensor as pt
 
 from pytensor import config
+from pytensor.graph.traversal import ancestors
 
-from pytensor_ml.layers import Dropout, Linear, Sequential
+from pytensor_ml.layers import Dropout, DropoutLayer, Linear, Sequential
 from pytensor_ml.params import collect_trainable_params
-from pytensor_ml.pytensorf import compile_predict
+from pytensor_ml.pytensorf import compile_predict, rewrite_for_prediction
 from pytensor_ml.state import initialize_params
-
-
-def test_layer_op_equality():
-    X = pt.tensor("X", shape=(None, None))
-
-    layer_1 = Linear("Linear_1", n_in=10, n_out=5, bias=True)(X)
-    layer_2 = Linear("Linear_1", n_in=10, n_out=5, bias=True)(X)
-    layer_3 = Linear("Linear_1", n_in=20, n_out=5, bias=True)(X)
-
-    assert layer_1.owner.op == layer_2.owner.op
-    assert layer_1.owner.op != layer_3.owner.op
-
-    assert hash(layer_1.owner.op) == hash(layer_2.owner.op)
-    assert hash(layer_1.owner.op) != hash(layer_3.owner.op)
 
 
 def test_compile_predict_removes_dropout():
@@ -35,4 +22,22 @@ def test_compile_predict_removes_dropout():
 
     predict = compile_predict(prediction, inputs=[X])
     X_values = np.random.default_rng(0).normal(size=(8, 4)).astype(config.floatX)
-    np.testing.assert_allclose(predict(X_values), predict(X_values))
+    first, second = predict(X_values), predict(X_values)
+
+    # Guards the test itself: at the zero initialization the output is identically zero, and so stable
+    # across calls whether or not dropout was removed.
+    assert np.any(first != 0)
+    np.testing.assert_allclose(first, second)
+
+
+def test_rewrite_for_prediction_leaves_the_original_graph_intact():
+    X = pt.tensor("X", shape=(None, 4))
+    prediction = Sequential(Linear("fc", n_in=4, n_out=4), Dropout(p=0.5))(X)
+
+    def has_dropout(graph):
+        return any(
+            isinstance(var.owner.op, DropoutLayer) for var in ancestors([graph]) if var.owner
+        )
+
+    assert not has_dropout(rewrite_for_prediction(prediction))
+    assert has_dropout(prediction)

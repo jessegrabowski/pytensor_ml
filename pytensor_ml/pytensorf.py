@@ -8,50 +8,20 @@ import pytensor
 
 from pytensor import Mode
 from pytensor.compile import Function, SharedVariable, get_mode
-from pytensor.compile.builders import OpFromGraph, SymbolicOp
+from pytensor.compile.builders import OpFromGraph
 from pytensor.graph import FunctionGraph, RewriteDatabaseQuery, graph_inputs, rewrite_graph
-from pytensor.graph.basic import Apply, Constant, equal_computations
+from pytensor.graph.basic import Apply, equal_computations
 from pytensor.graph.fg import Output
 from pytensor.scan.op import Scan
 from pytensor.tensor.random.op import RandomVariable, RNGConsumerOp
 from pytensor.tensor.random.type import RandomType
 from pytensor.tensor.random.variable import RandomGeneratorSharedVariable
-from pytensor.tensor.variable import TensorVariable, Variable
+from pytensor.tensor.variable import Variable
+
+from pytensor_ml.params import collect_graph_inputs
 
 SeedSequenceSeed = None | int | Sequence[int] | np.ndarray | np.random.SeedSequence
 RandomSeed = None | int | Sequence[int] | np.ndarray
-
-
-class LayerOp(SymbolicOp):
-    """Base class for the library's neural-network ops.
-
-    A ``SymbolicOp`` is an ``OpFromGraph`` whose inner graph is rebuilt from its ``__props__`` and input
-    types by :meth:`build_inner_graph`, so equal props with equal inputs yield an identical op. Basing the
-    layers on it (rather than plain ``OpFromGraph``) is what lets the numba backend optimize each inner
-    graph: ``SymbolicOp`` restores the fgraph-aware ``__eq__``/``__hash__`` that a props-carrying
-    ``OpFromGraph`` would otherwise lose, so the ``ofg_inner_graph`` rewrite keeps its optimized inner
-    graph instead of discarding it as unchanged.
-    """
-
-    __props__: tuple[str, ...] = ()
-
-    def update_map(self) -> dict[int, int]:
-        """Return a mapping of output indexes to input indexes"""
-        return {}
-
-
-class UnaryLayerOp(LayerOp):
-    """A ``LayerOp`` with exactly one output, typed as such.
-
-    ``SymbolicOp.__call__`` is annotated ``Variable | list[Variable]`` because an op may produce many
-    outputs; a unary layer op produces one, so narrow the result to ``TensorVariable``. The ``isinstance``
-    guard narrows for the type checker without a cast and asserts the invariant at runtime.
-    """
-
-    def __call__(self, *inputs, **kwargs) -> TensorVariable:
-        out = super().__call__(*inputs, **kwargs)
-        assert isinstance(out, TensorVariable), f"{type(self).__name__} produced multiple outputs"
-        return out
 
 
 def atleast_list(x):
@@ -218,22 +188,27 @@ def function(
     """
     Compile a Pytensor function, including specialized rewrites.
 
+    Threads the default next-RNG update for every shared generator the graph draws from, so repeated calls
+    advance their state instead of repeating draws.
+
     Parameters
     ----------
-    inputs: list of TensorVariables, optional
-        Inputs of the compiled PyTensor function
-    outputs: list of TensorVariables, optional
-        Outputs of the compiled PyTensor function
-    random_seed: int, array-like of int or SeedSequence, optional
-        Seed used to override any RandomState/Generator shared variables in the graph.
-        If not specified, the value of original shared variables will still be overwritten.
-    mode: optional
-        PyTensor mode used to compile the function
+    inputs : list of Variable
+        Inputs of the compiled function.
+    outputs : Variable or list of Variable
+        Outputs of the compiled function.
+    random_seed : int, array-like of int, or SeedSequence, optional
+        Seed used to reseed the graph's shared generators. They are replaced whether or not a seed is
+        given, so omitting it reseeds from fresh entropy rather than leaving them untouched.
+    mode : Mode or str, optional
+        PyTensor mode used to compile the function.
+    **kwargs
+        Forwarded to :func:`pytensor.function`. Any ``updates`` entry is merged after the RNG updates.
 
     Returns
     -------
-    pytensor_function: Function
-        Compiled function
+    Function
+        The compiled function.
     """
     rng_updates = collect_default_updates(
         inputs=[inp.variable if isinstance(inp, pytensor.In) else inp for inp in inputs],
@@ -246,17 +221,19 @@ def function(
         rngs = cast(list[SharedVariable], list(rng_updates))
         reseed_rngs(rngs, random_seed)
 
-    mode = get_mode(mode)
-    opt_qry = mode.provided_optimizer.including("random_make_inplace")
-    mode = Mode(linker=mode.linker, optimizer=opt_qry)
-    pytensor_function = pytensor.function(
+    base_mode = get_mode(mode)
+    mode = Mode(
+        linker=base_mode.linker,
+        optimizer=base_mode.provided_optimizer.including("random_make_inplace"),
+    )
+
+    return pytensor.function(
         inputs,
         outputs,
         updates={**rng_updates, **kwargs.pop("updates", {})},
         mode=mode,
         **kwargs,
     )
-    return pytensor_function
 
 
 def rewrite_pregrad(graph):
@@ -265,24 +242,38 @@ def rewrite_pregrad(graph):
 
 
 def rewrite_for_prediction(graph):
-    """Apply rewrites to specialize a graph for forward passes (e.g. removing Dropout layers)"""
+    """
+    Apply rewrites to specialize a graph for forward passes (e.g. removing Dropout layers).
+
+    Parameters
+    ----------
+    graph : FunctionGraph, Variable, or sequence of Variable
+        The graph to specialize.
+
+    Returns
+    -------
+    FunctionGraph, Variable, or list of Variable
+        The specialized graph, matching the form of ``graph``. A FunctionGraph is rewritten in place and
+        returned; a Variable or sequence is rewritten on a clone, leaving the original untouched.
+    """
+
+    # Local by design, following pytensor's own op/rewrite pattern: the rewrites import the layer ops they
+    # match on, so a module-scope import would tie this compile module to the whole layer surface.
     from pytensor_ml.rewriting.layers import predict_db
 
-    if isinstance(graph, FunctionGraph):
-        fgraph = graph
-    else:
-        outputs = [graph] if isinstance(graph, Variable) else graph
-        fgraph = FunctionGraph(outputs=outputs, clone=True, copy_inputs=False)
-
     rewriter = predict_db.query(RewriteDatabaseQuery(include=["basic"]))
+
+    if isinstance(graph, FunctionGraph):
+        rewriter.rewrite(graph)
+        return graph
+
+    has_single_output = isinstance(graph, Variable)
+    fgraph = FunctionGraph(
+        outputs=[graph] if has_single_output else list(graph), clone=True, copy_inputs=False
+    )
     rewriter.rewrite(fgraph)
 
-    if isinstance(graph, FunctionGraph):
-        return fgraph
-    if isinstance(graph, Variable):
-        return fgraph.outputs[0]
-
-    return fgraph.outputs
+    return fgraph.outputs[0] if has_single_output else fgraph.outputs
 
 
 def compile_predict(
@@ -313,14 +304,10 @@ def compile_predict(
     Function
         The compiled prediction function.
     """
-    prediction = rewrite_for_prediction(prediction)
+    specialized = rewrite_for_prediction(prediction)
     if inputs is None:
-        inputs = [
-            variable
-            for variable in graph_inputs([prediction])
-            if not isinstance(variable, Constant | SharedVariable)
-        ]
-    return function(list(inputs), prediction, **(compile_kwargs or {}))
+        inputs = collect_graph_inputs(specialized)
+    return function(list(inputs), specialized, **(compile_kwargs or {}))
 
 
 __all__ = ["compile_predict", "function", "rewrite_for_prediction", "rewrite_pregrad"]
