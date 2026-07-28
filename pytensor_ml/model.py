@@ -8,7 +8,7 @@ from pytensor_ml import optim
 from pytensor_ml.loss import Loss, supervised_loss
 from pytensor_ml.params import TrainableParameter, collect_trainable_params
 from pytensor_ml.pytensorf import compile_predict
-from pytensor_ml.state import InitializationScheme, initialize_params
+from pytensor_ml.state import InitializationSchemeLike, initialize_params
 
 
 class Model:
@@ -26,7 +26,7 @@ class Model:
 
     def initialize(
         self,
-        scheme: InitializationScheme = "xavier_normal",
+        scheme: InitializationSchemeLike = "xavier_normal",
         seed: int | np.random.Generator | None = None,
     ) -> "Model":
         """
@@ -34,8 +34,9 @@ class Model:
 
         Parameters
         ----------
-        scheme : str
-            Initialization scheme for the weights. Default 'xavier_normal'.
+        scheme : str or Initializer
+            Initialization scheme for the weights: the name of a built-in scheme, or an
+            :class:`~pytensor_ml.state.Initializer` instance. Default 'xavier_normal'.
         seed : int or numpy Generator, optional
             Seed for reproducible initialization.
         """
@@ -84,8 +85,7 @@ class Model:
                 self.y, inputs=[self.X], compile_kwargs=self._compile_kwargs
             )
 
-        result = self._predict_fn(X_values)
-        return result if isinstance(result, np.ndarray) else np.asarray(result)
+        return np.asarray(self._predict_fn(X_values))
 
     def __str__(self):
         return debugprint(self.y, file="str")

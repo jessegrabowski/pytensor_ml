@@ -19,19 +19,10 @@ class Initializer(ABC):
     """
     Base class for parameter initializers.
 
-    Can be used in two ways:
-    - As a class: `XavierNormalInitializer(param, rng)` - directly initializes
-    - As an instance: `init = XavierNormalInitializer(); init(param, rng)`
+    Subclasses implement :meth:`sample`. Calling an instance assigns a freshly sampled value to a
+    parameter in place, while :func:`initialize_params` calls :meth:`sample` directly and leaves the
+    assignment to its caller.
     """
-
-    def __new__(cls, param: SharedVariable | None = None, rng: RandomState | None = None):
-        # If called with a param, act as a function and initialize directly
-        if param is not None:
-            instance = object.__new__(cls)
-            cls.__init__(instance)
-            return instance(param, rng)
-        # Otherwise, return an instance for later use
-        return object.__new__(cls)
 
     def __call__(self, param: SharedVariable, rng: RandomState | None = None) -> SharedVariable:
         param.set_value(self._sample_like(param, rng))
@@ -60,29 +51,25 @@ class UnitUniformInitializer(Initializer):
 
 class XavierUniformInitializer(Initializer):
     def sample(self, shape: tuple[int, ...], dtype: str, rng: np.random.Generator) -> np.ndarray:
-        scale = np.sqrt(6.0 / np.sum([x for x in shape if x is not None]))
+        scale = np.sqrt(6.0 / np.sum(shape))
         return rng.uniform(-scale, scale, size=shape).astype(dtype)
 
 
 class XavierNormalInitializer(Initializer):
     def sample(self, shape: tuple[int, ...], dtype: str, rng: np.random.Generator) -> np.ndarray:
-        scale = np.sqrt(2.0 / np.sum([x for x in shape if x is not None]))
+        scale = np.sqrt(2.0 / np.sum(shape))
         return rng.normal(0, scale, size=shape).astype(dtype)
 
 
 class CustomInitializer(Initializer):
-    def __new__(
-        cls,
-        sample_fn: SamplingFunction | None = None,
-        param: SharedVariable | None = None,
-        rng: RandomState | None = None,
-    ):
-        instance = object.__new__(cls)
-        if sample_fn is not None:
-            instance._sample_fn = sample_fn
-        if param is not None:
-            return instance(param, rng)
-        return instance
+    """
+    Initializer built from a sampling function.
+
+    Parameters
+    ----------
+    sample_fn : callable
+        ``(shape, dtype, rng) -> ndarray``, returning the initial value for one parameter.
+    """
 
     def __init__(self, sample_fn: SamplingFunction):
         self._sample_fn = sample_fn
@@ -91,17 +78,19 @@ class CustomInitializer(Initializer):
         return self._sample_fn(shape, dtype, rng)
 
 
-_INIT_FUNCTIONS: dict[str, type[Initializer]] = {
+_INITIALIZERS: dict[str, type[Initializer]] = {
     "zeros": ZeroInitializer,
     "xavier_uniform": XavierUniformInitializer,
     "xavier_normal": XavierNormalInitializer,
     "unit_uniform": UnitUniformInitializer,
 }
 
+InitializationSchemeLike = InitializationScheme | Initializer
+
 
 def initialize_params(
     params: Sequence[SharedVariable],
-    scheme: InitializationScheme = "xavier_normal",
+    scheme: InitializationSchemeLike = "xavier_normal",
     rng: RandomState | None = None,
 ) -> list[np.ndarray]:
     """
@@ -112,7 +101,8 @@ def initialize_params(
     params
         SharedVariables to initialize values for.
     scheme
-        Initialization scheme to use.
+        Initialization scheme to use: the name of a built-in scheme, or any :class:`Initializer`
+        instance (including a :class:`CustomInitializer` wrapping your own sampling function).
     rng
         Random number generator. If None, a new one is created.
 
@@ -121,11 +111,8 @@ def initialize_params(
     list of np.ndarray
         Initialized values matching the shapes and dtypes of params.
     """
+    # Resolve once and share: a seed handed to each _sample_like call would repeat draws across parameters.
     rng = np.random.default_rng(rng)
 
-    initializer = _INIT_FUNCTIONS[scheme]()
-    results = []
-    for var in params:
-        value = var.get_value()
-        results.append(initializer.sample(value.shape, str(value.dtype), rng))
-    return results
+    initializer = scheme if isinstance(scheme, Initializer) else _INITIALIZERS[scheme]()
+    return [initializer._sample_like(param, rng) for param in params]
