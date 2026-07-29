@@ -7,16 +7,16 @@ import pytensor.tensor as pt
 from pytensor.tensor.basic import as_tensor_variable
 
 Reductions = Literal["mean", "sum"]
-reduction_dict = {"mean": pt.mean, "sum": pt.sum}
-
 ReductionFunction = Callable[[pt.TensorVariable], pt.TensorVariable]
 
 # A callable covers the unreduced case (``reduction=lambda x: x``), for weighting individual losses.
 ReductionLike = Reductions | ReductionFunction
 
+_REDUCTIONS: dict[Reductions, ReductionFunction] = {"mean": pt.mean, "sum": pt.sum}
+
 
 def _as_reduction(reduction: ReductionLike) -> ReductionFunction:
-    return reduction if callable(reduction) else reduction_dict[reduction]
+    return reduction if callable(reduction) else _REDUCTIONS[reduction]
 
 
 class Loss(ABC):
@@ -32,6 +32,8 @@ class SquaredError(Loss):
         self.reduction = _as_reduction(reduction)
 
     def loss(self, y_true, y_pred) -> pt.TensorVariable:
+        y_true = as_tensor_variable(y_true)
+        y_pred = as_tensor_variable(y_pred)
         return self.reduction((y_true - y_pred) ** 2)
 
 

@@ -1,6 +1,6 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from pytensor_ml.optim.base import Parameter, UpdateRule
+from pytensor_ml.optim.base import LossOrGradients, Parameter, UpdateRule, Updates
 from pytensor_ml.optim.rules import (
     adadelta_updates,
     adagrad_updates,
@@ -27,16 +27,11 @@ def sgd(learning_rate: float = 0.01, momentum: float = 0.0, nesterov: bool = Fal
         Momentum coefficient. A value of 0 (the default) gives plain SGD.
     nesterov : bool
         Use Nesterov momentum. Ignored when ``momentum`` is 0. Default False.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
         if not momentum:
-            return sgd_updates(loss_or_gradients, parameters, learning_rate)
+            return sgd_updates(loss_or_gradients, parameters, learning_rate=learning_rate)
         updates = sgd_updates(loss_or_gradients, parameters, learning_rate=1.0)
         updates = trace(momentum, nesterov)(updates, parameters)
         return scale(learning_rate)(updates, parameters)
@@ -53,16 +48,17 @@ def adam(
 ) -> UpdateRule:
     """
     Adam optimizer. See :func:`~pytensor_ml.optim.rules.adam_updates` for the update rule.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
         return adam_updates(
-            loss_or_gradients, parameters, learning_rate, beta1, beta2, epsilon, amsgrad
+            loss_or_gradients,
+            parameters,
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+            amsgrad=amsgrad,
         )
 
     return rule
@@ -80,24 +76,19 @@ def adamw(
     """
     AdamW optimizer (Adam with decoupled weight decay). See
     :func:`~pytensor_ml.optim.rules.adamw_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
         return adamw_updates(
             loss_or_gradients,
             parameters,
-            learning_rate,
-            weight_decay,
-            beta1,
-            beta2,
-            epsilon,
-            amsgrad,
-            mask,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+            amsgrad=amsgrad,
+            mask=mask,
         )
 
     return rule
@@ -112,15 +103,17 @@ def nadam(
     """
     Nadam optimizer (Adam with Nesterov momentum). See
     :func:`~pytensor_ml.optim.rules.nadam_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
-        return nadam_updates(loss_or_gradients, parameters, learning_rate, beta1, beta2, epsilon)
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
+        return nadam_updates(
+            loss_or_gradients,
+            parameters,
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+        )
 
     return rule
 
@@ -134,15 +127,17 @@ def adamax(
     """
     AdaMax optimizer (Adam with an infinity-norm denominator). See
     :func:`~pytensor_ml.optim.rules.adamax_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
-        return adamax_updates(loss_or_gradients, parameters, learning_rate, beta1, beta2, epsilon)
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
+        return adamax_updates(
+            loss_or_gradients,
+            parameters,
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+        )
 
     return rule
 
@@ -156,16 +151,17 @@ def rprop(
 ) -> UpdateRule:
     """
     Rprop optimizer (resilient backpropagation). See :func:`~pytensor_ml.optim.rules.rprop_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
         return rprop_updates(
-            loss_or_gradients, parameters, learning_rate, eta_minus, eta_plus, step_min, step_max
+            loss_or_gradients,
+            parameters,
+            learning_rate=learning_rate,
+            eta_minus=eta_minus,
+            eta_plus=eta_plus,
+            step_min=step_min,
+            step_max=step_max,
         )
 
     return rule
@@ -180,16 +176,17 @@ def rmsprop(
 ) -> UpdateRule:
     """
     RMSProp optimizer. See :func:`~pytensor_ml.optim.rules.rmsprop_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
         return rmsprop_updates(
-            loss_or_gradients, parameters, learning_rate, rho, momentum, epsilon, centered
+            loss_or_gradients,
+            parameters,
+            learning_rate=learning_rate,
+            rho=rho,
+            momentum=momentum,
+            epsilon=epsilon,
+            centered=centered,
         )
 
     return rule
@@ -198,15 +195,12 @@ def rmsprop(
 def adagrad(learning_rate: float = 0.01, epsilon: float = 1e-8) -> UpdateRule:
     """
     AdaGrad optimizer. See :func:`~pytensor_ml.optim.rules.adagrad_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
-        return adagrad_updates(loss_or_gradients, parameters, learning_rate, epsilon)
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
+        return adagrad_updates(
+            loss_or_gradients, parameters, learning_rate=learning_rate, epsilon=epsilon
+        )
 
     return rule
 
@@ -214,14 +208,11 @@ def adagrad(learning_rate: float = 0.01, epsilon: float = 1e-8) -> UpdateRule:
 def adadelta(learning_rate: float = 1.0, rho: float = 0.9, epsilon: float = 1e-8) -> UpdateRule:
     """
     AdaDelta optimizer. See :func:`~pytensor_ml.optim.rules.adadelta_updates`.
-
-    Returns
-    -------
-    UpdateRule
-        A configured optimizer ``(loss_or_gradients, parameters) -> Updates``.
     """
 
-    def rule(loss_or_gradients, parameters):
-        return adadelta_updates(loss_or_gradients, parameters, learning_rate, rho, epsilon)
+    def rule(loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]) -> Updates:
+        return adadelta_updates(
+            loss_or_gradients, parameters, learning_rate=learning_rate, rho=rho, epsilon=epsilon
+        )
 
     return rule
