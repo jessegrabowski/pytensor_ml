@@ -45,7 +45,9 @@ def test_round_trip_restores_parameters_and_optimizer_state(tmp_path):
 
     for _ in range(5):  # drive params and optimizer state away from the snapshot
         step(*batch)
-    assert any(not np.allclose(v.get_value(), snapshot[v.name]) for v in checkpointed)
+    assert any(
+        not np.allclose(variable.get_value(), snapshot[variable.name]) for variable in checkpointed
+    )
 
     load_state(checkpointed, path)
     for variable in checkpointed:
@@ -54,7 +56,7 @@ def test_round_trip_restores_parameters_and_optimizer_state(tmp_path):
 
 def test_step_counter_round_trips_exactly(tmp_path):
     # The step counter is a rank-0 int64 array; the round-trip must preserve its rank, dtype, and value
-    # (np.ascontiguousarray would silently promote it to shape (1,) on save -- see checkpoint._contiguous).
+    # (np.ascontiguousarray would silently promote it to shape (1,) on save -- see _as_saveable_array).
     _, state, _, _ = build_trained_step()
     counter = next(variable for variable in state if variable.name == "adam/step_count")
     saved = counter.get_value()
@@ -69,6 +71,42 @@ def test_step_counter_round_trips_exactly(tmp_path):
     assert restored.shape == ()
     assert restored.dtype == np.int64
     np.testing.assert_array_equal(restored, saved)
+
+
+def test_non_contiguous_value_round_trips_without_reordering(tmp_path):
+    # safetensors serializes an array's raw buffer: handed an F-ordered value it silently writes the
+    # elements in the wrong order rather than raising, so the save must copy to C order first.
+    variable = shared(np.arange(6, dtype="float64").reshape(2, 3).T, "w")
+    assert not variable.get_value(borrow=True).flags["C_CONTIGUOUS"]
+
+    path = tmp_path / "checkpoint.safetensors"
+    save_state([variable], path)
+    variable.set_value(np.zeros((3, 2)))
+    load_state([variable], path)
+
+    np.testing.assert_array_equal(variable.get_value(), np.arange(6).reshape(2, 3).T)
+
+
+@pytest.mark.parametrize(
+    "mode, backend_module", [("JAX", "jax"), ("MLX", "mlx.core")], ids=["jax", "mlx"]
+)
+def test_round_trip_after_compiled_backend_update(mode, backend_module, tmp_path):
+    # A function compiled for a JIT backend stores that backend's array type in the shared variables it
+    # updates, so both sides of a checkpoint taken after training see no numpy at all.
+    pytest.importorskip(backend_module)
+    weight = shared([1.0, 2.0], "w", dtype="float32")
+    counter = shared(0, "step", dtype="int32")
+    pytensor.function([], [], updates={weight: weight * 2, counter: counter + 1}, mode=mode)()
+    assert not isinstance(weight.get_value(), np.ndarray)  # the premise: no longer a numpy value
+
+    path = tmp_path / "checkpoint.safetensors"
+    save_state([weight, counter], path)
+    weight.set_value(np.zeros(2, dtype="float32"))
+    counter.set_value(np.asarray(0, dtype="int32"))
+    load_state([weight, counter], path)
+
+    np.testing.assert_array_equal(weight.get_value(), [2.0, 4.0])
+    np.testing.assert_array_equal(counter.get_value(), 1)
 
 
 def test_name_map_loads_under_renamed_keys(tmp_path):
@@ -102,7 +140,7 @@ def test_load_rejects_dtype_mismatch(tmp_path):
     # Same shape, different dtype: a real footgun when loading a lower-precision checkpoint into fp64 params.
     save_state([shared([1, 2, 3], "w", dtype="int64")], tmp_path / "c.safetensors")
     target = shared([0.0, 0.0, 0.0], "w")
-    with pytest.raises(ValueError, match="do not match their targets"):
+    with pytest.raises(ValueError, match="archive has int64"):
         load_state([target], tmp_path / "c.safetensors")
     np.testing.assert_array_equal(target.get_value(), [0.0, 0.0, 0.0])
 
@@ -148,4 +186,4 @@ def test_parameters_keep_identity_across_compilation():
     function([X, target], loss, updates=adam(1e-2)(loss, before))
 
     after = collect_trainable_params(prediction)
-    assert all(b is a for b, a in zip(before, after))
+    assert all(b is a for b, a in zip(before, after, strict=True))
