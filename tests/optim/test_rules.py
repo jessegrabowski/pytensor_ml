@@ -1,9 +1,11 @@
 import inspect
 
 import numpy as np
+import pytensor
 import pytensor.tensor as pt
 import pytest
 
+from pytensor_ml import params
 from pytensor_ml.optim import (
     adadelta,
     adadelta_updates,
@@ -25,8 +27,17 @@ from pytensor_ml.optim import (
     sgd_updates,
 )
 from pytensor_ml.optim import alias as alias_module
-from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import function
+
+floatX = pytensor.config.floatX
+
+# The closed-form step identities below are exact in real arithmetic, so the gap is pure rounding.
+RTOL = 1e-6 if floatX == "float64" else 1e-4
+
+
+def trainable(value, name=None, **kwargs):
+    """Create a parameter at floatX; a float64 literal would not match the gradients it is updated with."""
+    return params.trainable(np.asarray(value, dtype=floatX), name=name, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -112,7 +123,7 @@ def test_sgd_momentum_follows_closed_form_trajectory(nesterov):
     start = np.array([5.0, -3.0])
     p = trainable(start.copy(), name="w")
     g0 = np.array([2.0, -0.5])
-    loss = (pt.constant(g0) * p).sum()  # constant gradient g0, independent of p
+    loss = (pt.constant(g0, dtype=floatX) * p).sum()  # constant gradient g0, independent of p
     lr, momentum, n_steps = 0.1, 0.9, 5
     rule = sgd(learning_rate=lr, momentum=momentum, nesterov=nesterov)
     fn = function([], loss, updates=rule(loss, [p]))
@@ -123,7 +134,7 @@ def test_sgd_momentum_follows_closed_form_trajectory(nesterov):
         current = p.get_value()
         exponent = t + 1 if nesterov else t
         expected_step = -lr * g0 * (1 - momentum**exponent) / (1 - momentum)
-        np.testing.assert_allclose(current - previous, expected_step, rtol=1e-6)
+        np.testing.assert_allclose(current - previous, expected_step, rtol=RTOL)
         previous = current
 
 
@@ -138,7 +149,7 @@ def test_adam_first_step_is_sign_descent():
     function([], loss, updates=adam_updates(loss, [p], learning_rate=lr))()
 
     step = start - p.get_value()
-    np.testing.assert_allclose(step, lr * np.sign(start), rtol=1e-6)
+    np.testing.assert_allclose(step, lr * np.sign(start), rtol=RTOL)
 
 
 def test_adam_updates_keyed_by_object_with_named_state():
@@ -178,7 +189,7 @@ def test_two_functions_from_one_rule_continue_the_same_momentum():
     ``lr * g * (1 - m**t) / (1 - m)``, so a continued second step is 1.9x a restarted one at ``m = 0.9``."""
     p = trainable(np.zeros(2), name="w")
     gradient = np.array([2.0, -0.5])
-    loss = (pt.constant(gradient) * p).sum()  # constant gradient, independent of p
+    loss = (pt.constant(gradient, dtype=floatX) * p).sum()  # constant gradient, independent of p
     learning_rate, momentum = 0.1, 0.9
     rule = sgd(learning_rate=learning_rate, momentum=momentum)
 
@@ -190,7 +201,7 @@ def test_two_functions_from_one_rule_continue_the_same_momentum():
     step_again()
 
     continued = -learning_rate * gradient * (1 - momentum**2) / (1 - momentum)
-    np.testing.assert_allclose(p.get_value() - before, continued, rtol=1e-6)
+    np.testing.assert_allclose(p.get_value() - before, continued, rtol=RTOL)
 
 
 def test_separately_configured_rules_keep_independent_state():
@@ -219,7 +230,7 @@ def test_adamw_first_step_applies_decoupled_decay():
     )()
 
     step = p.get_value() - start
-    np.testing.assert_allclose(step, -lr * (np.sign(start) + weight_decay * start), rtol=1e-6)
+    np.testing.assert_allclose(step, -lr * (np.sign(start) + weight_decay * start), rtol=RTOL)
 
 
 def test_adamw_mask_excludes_parameters_from_decay():
@@ -239,8 +250,8 @@ def test_adamw_mask_excludes_parameters_from_decay():
     )
     function([], loss, updates=updates)()
 
-    np.testing.assert_allclose(w.get_value() - 2.0, -lr * (1.0 + weight_decay * 2.0), rtol=1e-6)
-    np.testing.assert_allclose(b.get_value() - 2.0, -lr * 1.0, rtol=1e-6)
+    np.testing.assert_allclose(w.get_value() - 2.0, -lr * (1.0 + weight_decay * 2.0), rtol=RTOL)
+    np.testing.assert_allclose(b.get_value() - 2.0, -lr * 1.0, rtol=RTOL)
 
 
 def test_adagrad_step_decays_as_inverse_sqrt_t():
@@ -249,7 +260,7 @@ def test_adagrad_step_decays_as_inverse_sqrt_t():
     start = np.array([5.0, -3.0])
     p = trainable(start.copy(), name="w")
     g0 = np.array([2.0, -0.5])  # 4x apart, yet both coordinates take the same step size
-    loss = (pt.constant(g0) * p).sum()  # constant gradient g0, independent of p
+    loss = (pt.constant(g0, dtype=floatX) * p).sum()  # constant gradient g0, independent of p
     lr, n_steps = 0.1, 6
     fn = function([], loss, updates=adagrad_updates(loss, [p], learning_rate=lr))
 
@@ -323,7 +334,7 @@ def test_rmsprop_momentum_converges_to_terminal_velocity():
     start = np.array([10.0, -10.0])
     p = trainable(start.copy(), name="w")
     g0 = np.array([2.0, -0.5])
-    loss = (pt.constant(g0) * p).sum()  # constant gradient g0, independent of p
+    loss = (pt.constant(g0, dtype=floatX) * p).sum()  # constant gradient g0, independent of p
     lr, momentum, n_steps = 1e-3, 0.9, 200
     fn = function([], loss, updates=rmsprop_updates(loss, [p], learning_rate=lr, momentum=momentum))
 
@@ -346,7 +357,7 @@ def test_nadam_first_step_scales_by_one_plus_beta1():
     function([], loss, updates=nadam_updates(loss, [p], learning_rate=lr, beta1=beta1))()
 
     step = start - p.get_value()
-    np.testing.assert_allclose(step, lr * (1 + beta1) * np.sign(start), rtol=1e-6)
+    np.testing.assert_allclose(step, lr * (1 + beta1) * np.sign(start), rtol=RTOL)
 
 
 def test_adamax_takes_constant_step_under_constant_gradient():
@@ -356,7 +367,7 @@ def test_adamax_takes_constant_step_under_constant_gradient():
     start = np.array([5.0, -3.0])
     p = trainable(start.copy(), name="w")
     g0 = np.array([2.0, -0.5])  # 4x apart, yet both coordinates take the same step size
-    loss = (pt.constant(g0) * p).sum()  # constant gradient g0, independent of p
+    loss = (pt.constant(g0, dtype=floatX) * p).sum()  # constant gradient g0, independent of p
     lr, n_steps = 0.1, 6
     fn = function([], loss, updates=adamax_updates(loss, [p], learning_rate=lr))
 
@@ -375,7 +386,7 @@ def test_rprop_step_grows_geometrically_under_constant_sign():
     start = np.array([5.0, -3.0])
     p = trainable(start.copy(), name="w")
     g0 = np.array([2.0, -0.5])  # 4x apart, yet both coordinates take the same step size
-    loss = (pt.constant(g0) * p).sum()  # constant gradient g0, independent of p
+    loss = (pt.constant(g0, dtype=floatX) * p).sum()  # constant gradient g0, independent of p
     lr, eta_plus, n_steps = 0.01, 1.2, 5
     fn = function([], loss, updates=rprop_updates(loss, [p], learning_rate=lr, eta_plus=eta_plus))
 
@@ -383,7 +394,7 @@ def test_rprop_step_grows_geometrically_under_constant_sign():
     for t in range(1, n_steps + 1):
         fn()
         current = p.get_value()
-        np.testing.assert_allclose(np.abs(current - previous), lr * eta_plus ** (t - 1), rtol=1e-6)
+        np.testing.assert_allclose(np.abs(current - previous), lr * eta_plus ** (t - 1), rtol=RTOL)
         previous = current
 
 
@@ -410,15 +421,19 @@ def test_amsgrad_caps_step_after_gradient_spike():
     second moment lets the effective step size grow back."""
     g = pt.vector("g")
 
+    spike = np.array([10.0], dtype=floatX)
+    # 1e-3 is not exact in float32, so pytensor rejects the bare literal rather than downcasting it.
+    settled = np.array([1e-3], dtype=floatX)
+
     def step_after_spike(amsgrad):
         p = trainable(np.zeros(1), name="w")
         updates = adam_updates([g], [p], learning_rate=0.1, beta2=0.9, amsgrad=amsgrad)
         fn = function([g], p, updates=updates)
-        fn([10.0])
+        fn(spike)
         for _ in range(20):
-            fn([1e-3])
+            fn(settled)
         before = p.get_value().copy()
-        fn([1e-3])
+        fn(settled)
         return np.abs(p.get_value() - before)[0]
 
     assert step_after_spike(amsgrad=True) < step_after_spike(amsgrad=False)
@@ -426,7 +441,7 @@ def test_amsgrad_caps_step_after_gradient_spike():
 
 def test_precomputed_gradients_accepted():
     p = trainable(np.ones(2), name="w")
-    gradients = [pt.constant(np.array([0.5, -0.5]))]
+    gradients = [pt.constant(np.array([0.5, -0.5], dtype=floatX))]
     updates = sgd(learning_rate=1.0)(gradients, [p])
     np.testing.assert_allclose(function([], updates[p])(), [0.5, 1.5])
 
@@ -434,6 +449,6 @@ def test_precomputed_gradients_accepted():
 def test_get_gradients_rejects_count_mismatch():
     weight = trainable(np.ones(2), name="w")
     bias = trainable(np.ones(2), name="b")
-    one_gradient = [pt.constant(np.ones(2))]
+    one_gradient = [pt.constant(np.ones(2, dtype=floatX))]
     with pytest.raises(ValueError, match="1 gradients for 2 parameters"):
         sgd_updates(one_gradient, [weight, bias])
