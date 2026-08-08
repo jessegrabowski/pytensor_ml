@@ -3,11 +3,14 @@ from collections.abc import Callable, Sequence
 import pytensor.tensor as pt
 
 from pytensor import config
+from pytensor.graph.basic import Variable
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import (
+    LearningRate,
     LossOrGradients,
     Parameter,
+    Rate,
     Updates,
     counter,
     get_gradients,
@@ -18,7 +21,7 @@ from pytensor_ml.optim.base import (
 def sgd_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 1.0,
+    learning_rate: Rate = 1.0,
 ) -> Updates:
     r"""
     Vanilla stochastic gradient descent: :math:`p \leftarrow p - \eta g`.
@@ -32,7 +35,7 @@ def sgd_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 1.0.
 
     Returns
@@ -50,7 +53,7 @@ def sgd_updates(
 def adam_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 1e-3,
+    learning_rate: Rate = 1e-3,
     beta1: float = 0.9,
     beta2: float = 0.999,
     epsilon: float = 1e-8,
@@ -71,7 +74,7 @@ def adam_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 1e-3.
     beta1 : float
         Exponential decay rate for the first moment :math:`m`. Default 0.9.
@@ -141,7 +144,7 @@ def amsgrad_second_moment(
 def adamw_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 1e-3,
+    learning_rate: Rate = 1e-3,
     weight_decay: float = 0.01,
     beta1: float = 0.9,
     beta2: float = 0.999,
@@ -165,7 +168,7 @@ def adamw_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 1e-3.
     weight_decay : float
         Decoupled decay coefficient :math:`\lambda`. Default 0.01.
@@ -220,7 +223,7 @@ def adamw_updates(
 def nadam_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 2e-3,
+    learning_rate: Rate = 2e-3,
     beta1: float = 0.9,
     beta2: float = 0.999,
     epsilon: float = 1e-8,
@@ -242,7 +245,7 @@ def nadam_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 2e-3.
     beta1 : float
         Exponential decay rate for the first moment. Default 0.9.
@@ -289,7 +292,7 @@ def nadam_updates(
 def adamax_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 2e-3,
+    learning_rate: Rate = 2e-3,
     beta1: float = 0.9,
     beta2: float = 0.999,
     epsilon: float = 1e-8,
@@ -310,7 +313,7 @@ def adamax_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 2e-3.
     beta1 : float
         Exponential decay rate for the first moment. Default 0.9.
@@ -351,7 +354,7 @@ def adamax_updates(
 def adagrad_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 0.01,
+    learning_rate: Rate = 0.01,
     epsilon: float = 1e-8,
 ) -> Updates:
     r"""
@@ -368,7 +371,7 @@ def adagrad_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 0.01.
     epsilon : float
         Constant added under the root for numerical stability. Default 1e-8.
@@ -395,7 +398,7 @@ def adagrad_updates(
 def rmsprop_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 1e-2,
+    learning_rate: Rate = 1e-2,
     rho: float = 0.9,
     momentum: float = 0.0,
     epsilon: float = 1e-8,
@@ -419,7 +422,7 @@ def rmsprop_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 1e-2.
     rho : float
         Decay rate for the running average of squared gradients. Default 0.9.
@@ -466,7 +469,7 @@ def rmsprop_updates(
 def adadelta_updates(
     loss_or_gradients: LossOrGradients,
     parameters: Sequence[Parameter],
-    learning_rate: float = 1.0,
+    learning_rate: Rate = 1.0,
     rho: float = 0.9,
     epsilon: float = 1e-8,
 ) -> Updates:
@@ -486,7 +489,7 @@ def adadelta_updates(
         Scalar loss to differentiate, or precomputed gradients.
     parameters : sequence of shared tensor variable
         Parameters to update.
-    learning_rate : float
+    learning_rate : float or shared tensor variable
         Step size :math:`\eta`. Default 1.0.
     rho : float
         Decay rate for the running averages. Default 0.9.
@@ -520,6 +523,27 @@ def adadelta_updates(
         updates[parameter] = parameter - learning_rate * update
 
     return updates
+
+
+def _require_numeric_learning_rate(learning_rate: LearningRate) -> None:
+    """
+    Raise ``TypeError`` unless ``learning_rate`` is a plain number.
+
+    Rprop's rate initializes the per-parameter step sizes it then adapts, so it is consumed at allocation
+    time and never reaches the graph. A schedule or shared variable would fail deep inside numpy instead.
+
+    Parameters
+    ----------
+    learning_rate : float, shared tensor variable, or Schedule
+        The rate to check.
+    """
+    if callable(learning_rate) or isinstance(learning_rate, Variable):
+        raise TypeError(
+            "rprop's learning rate initializes its per-parameter step sizes rather than scaling the step, "
+            "so it must be a plain number and cannot be scheduled or steered. Schedule a rule whose rate "
+            "multiplies the step, or scale rprop's finished step with "
+            "`chain(rprop(...), scale_by_schedule(...))`, which is a different algorithm."
+        )
 
 
 def rprop_updates(
@@ -563,6 +587,8 @@ def rprop_updates(
     Updates
         Mapping from each parameter and its state buffers to their next values.
     """
+    _require_numeric_learning_rate(learning_rate)
+
     gradients = get_gradients(loss_or_gradients, parameters)
 
     updates: Updates = {}
