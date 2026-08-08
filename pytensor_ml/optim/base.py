@@ -26,6 +26,9 @@ Transform = Callable[[Updates, Sequence[Parameter]], Updates]
 
 UpdateRule = Callable[[LossOrGradients, Sequence[Parameter]], Updates]
 
+# A learning-rate schedule: symbolic step count in, scalar learning rate out.
+type Schedule = Callable[[TensorVariable], TensorVariable]
+
 
 def get_gradients(
     loss_or_gradients: LossOrGradients,
@@ -63,37 +66,37 @@ _state_buffers: ContextVar[dict[_StateKey, Parameter] | None] = ContextVar(
 )
 
 
-def reuses_state(rule: UpdateRule) -> UpdateRule:
+def reuses_state[**P, R](builds_updates: Callable[P, R]) -> Callable[P, R]:
     """
-    Give ``rule`` a private set of optimizer-state buffers, reused on every invocation.
+    Give ``builds_updates`` a private set of optimizer-state buffers, reused on every invocation.
 
     A configured rule such as ``adam(1e-3)`` reads as a value, so it is natural to compile two training
     functions from one. Without this, each invocation allocates fresh momentum under the *same* derived
     name: the two steps then share parameters but not optimizer state, which is silently wrong at runtime
-    and raises only later when both are checkpointed together.
+    and raises only later when both are checkpointed together. The same holds for a composed transform,
+    whose state is likewise allocated per call.
 
-    The buffers are keyed per rule rather than globally so two independently configured optimizers stay
-    independent. They are bound dynamically because :func:`state_for` is reached through the update-rule
-    functions, several call layers below, and threading a cache down would touch every one of them.
+    The buffers are keyed per wrapped callable rather than globally so two independently configured
+    optimizers stay independent. They are bound dynamically because :func:`state_for` is reached several
+    call layers below, and threading a cache down would touch every one of them. Nesting is safe: an inner
+    scope restores the outer one on exit, so a rule's own buffers and its enclosing chain's coexist.
 
     Parameters
     ----------
-    rule : UpdateRule
-        The rule to wrap. Its buffers live as long as the wrapper does.
+    builds_updates : callable
+        A rule or transform to wrap. Its buffers live as long as the wrapper does.
     """
     buffers: dict[_StateKey, Parameter] = {}
 
-    @wraps(rule)
-    def rule_with_persistent_state(
-        loss_or_gradients: LossOrGradients, parameters: Sequence[Parameter]
-    ) -> Updates:
+    @wraps(builds_updates)
+    def with_persistent_state(*args: P.args, **kwargs: P.kwargs) -> R:
         token = _state_buffers.set(buffers)
         try:
-            return rule(loss_or_gradients, parameters)
+            return builds_updates(*args, **kwargs)
         finally:
             _state_buffers.reset(token)
 
-    return rule_with_persistent_state
+    return with_persistent_state
 
 
 def _reuse_or_allocate(key: _StateKey, allocate: Callable[[], Parameter]) -> Parameter:
@@ -146,6 +149,24 @@ def counter(name: str) -> Parameter:
     )
 
 
+def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
+    """
+    Return a floatX scalar shared variable, reused across invocations of a rule wrapped in
+    :func:`reuses_state`.
+
+    Parameters
+    ----------
+    name : str
+        Name of the variable, used to match it at serialization boundaries.
+    fill_value : float
+        Value to initialize it with. Default 0.0.
+    """
+    return _reuse_or_allocate(
+        name,
+        lambda: pytensor.shared(np.asarray(fill_value, dtype=pytensor.config.floatX), name=name),
+    )
+
+
 def require_unique_state_names(updates: Updates) -> None:
     """
     Raise if two distinct shared variables in ``updates`` share a name.
@@ -190,6 +211,7 @@ def chain(*transforms: Transform) -> Transform:
         A transform that applies each input transform in sequence.
     """
 
+    @reuses_state
     def combined(updates: Updates, parameters: Sequence[Parameter]) -> Updates:
         for transform in transforms:
             updates = transform(updates, parameters)
