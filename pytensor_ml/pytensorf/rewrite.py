@@ -3,8 +3,13 @@ from pytensor.tensor.variable import Variable
 
 
 def rewrite_pregrad(graph):
-    """Apply simplifying or stabilizing rewrites to graph that are safe to use pre-grad."""
-    return rewrite_graph(graph, include=("canonicalize", "stabilize"))
+    """
+    Apply simplifying or stabilizing rewrites to graph that are safe to use pre-grad.
+
+    Holds back the canonicalization that splices out pytensor's gradient markers, so a stop-gradient in
+    ``graph`` still reaches ``grad``.
+    """
+    return rewrite_graph(graph, include=("canonicalize", "stabilize"), exclude=("local_view_op",))
 
 
 def rewrite_for_prediction(graph):

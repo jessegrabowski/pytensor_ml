@@ -3,13 +3,14 @@ import pytensor.tensor as pt
 import pytest
 
 from pytensor import config
+from pytensor.gradient import disconnected_grad, zero_grad
 from sklearn.datasets import load_digits, make_regression
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, StandardScaler
 
 from pytensor_ml.activations import LeakyReLU
 from pytensor_ml.layers import BatchNorm2D, Linear, Sequential
 from pytensor_ml.loss import CrossEntropy, SquaredError, supervised_loss
-from pytensor_ml.optim import adam, compile_train, sgd
+from pytensor_ml.optim import adam, adamw, compile_train, sgd
 from pytensor_ml.optim.base import state_for
 from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import collect_non_trainable_params, collect_trainable_params
@@ -237,3 +238,50 @@ def test_compile_train_includes_non_trainable_updates():
     step(rng.normal(size=(16, 4)).astype(config.floatX), np.zeros((16, 4), dtype=config.floatX))
 
     assert not np.allclose(running_mean.get_value(), before)
+
+
+def test_compile_train_leaves_a_stop_gradient_target_network_untouched():
+    # The DQN shape: a bootstrap target detached from the graph. Its weights must not move, and the online
+    # weights must.
+    X = pt.tensor("X", shape=(None, 4))
+    online = Linear("online", n_in=4, n_out=2)(X)
+    target = Linear("target", n_in=4, n_out=2)(X)
+    parameters = collect_trainable_params([online, target])
+    initialize(parameters)
+    loss = ((online - disconnected_grad(target)) ** 2).mean()
+
+    before = {parameter: parameter.get_value().copy() for parameter in parameters}
+    step = compile_train(loss, adam(learning_rate=1e-2), inputs=[X])
+    batch = np.random.default_rng(0).normal(size=(32, 4)).astype(config.floatX)
+    for _ in range(20):
+        step(batch)
+
+    moved = {
+        parameter.name: not np.allclose(parameter.get_value(), value)
+        for parameter, value in before.items()
+    }
+    assert moved == {"online_W": True, "online_b": True, "target_W": False, "target_b": False}
+
+
+def test_compile_train_leaves_a_zero_grad_parameter_untouched_under_weight_decay():
+    # A zero gradient alone does not protect a parameter: adamw's decoupled decay shrinks it every step
+    # whatever the gradient is, so it has to be left out of the optimizer's set rather than merely handed a
+    # zero. adam would hide this, since a zero gradient gives it a zero step.
+    X = pt.tensor("X", shape=(None, 4))
+    live = Linear("live", n_in=4, n_out=2)(X)
+    frozen = Linear("frozen", n_in=4, n_out=2)(X)
+    parameters = collect_trainable_params([live, frozen])
+    initialize(parameters)
+    loss = ((live + zero_grad(frozen)) ** 2).mean()
+
+    before = {parameter: parameter.get_value().copy() for parameter in parameters}
+    step = compile_train(loss, adamw(learning_rate=1e-2, weight_decay=0.1), inputs=[X])
+    batch = np.random.default_rng(0).normal(size=(32, 4)).astype(config.floatX)
+    for _ in range(20):
+        step(batch)
+
+    moved = {
+        parameter.name: not np.allclose(parameter.get_value(), value)
+        for parameter, value in before.items()
+    }
+    assert moved == {"live_W": True, "live_b": True, "frozen_W": False, "frozen_b": False}
