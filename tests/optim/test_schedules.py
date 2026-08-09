@@ -7,10 +7,12 @@ from pytensor.tensor import lscalar
 from pytensor_ml.optim import (
     chain,
     compile_train,
-    cosine_annealing,
-    exponential_decay,
-    linear_decay,
-    polynomial_decay,
+    constant_schedule,
+    cosine_schedule,
+    exponential_schedule,
+    join_schedules,
+    linear_schedule,
+    polynomial_schedule,
     scale_by_schedule,
     sgd,
     step_decay,
@@ -18,9 +20,9 @@ from pytensor_ml.optim import (
 from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import function
 
-# Every schedule takes (learning_rate, total_steps, min_learning_rate) and owes the same contract at the
+# Every schedule takes (learning_rate, total_steps, final_learning_rate) and owes the same contract at the
 # horizon, so those properties are asserted once for all of them.
-SCHEDULES = [cosine_annealing, linear_decay, exponential_decay, polynomial_decay]
+SCHEDULES = [cosine_schedule, linear_schedule, exponential_schedule, polynomial_schedule]
 
 
 def evaluate_schedule(schedule, steps):
@@ -31,19 +33,19 @@ def evaluate_schedule(schedule, steps):
 
 @pytest.mark.parametrize("schedule_factory", SCHEDULES)
 def test_schedule_decreases_monotonically(schedule_factory):
-    rates = evaluate_schedule(schedule_factory(0.5, 10, min_learning_rate=0.05), range(11))
+    rates = evaluate_schedule(schedule_factory(0.5, 10, final_learning_rate=0.05), range(11))
     assert np.all(np.diff(rates) < 0.0)
 
 
 @pytest.mark.parametrize("schedule_factory", SCHEDULES)
 def test_schedule_accepts_single_step_horizon(schedule_factory):
-    rates = evaluate_schedule(schedule_factory(0.5, 1, min_learning_rate=0.05), [0, 1])
+    rates = evaluate_schedule(schedule_factory(0.5, 1, final_learning_rate=0.05), [0, 1])
     np.testing.assert_allclose(rates, [0.5, 0.05], rtol=1e-6)
 
 
 @pytest.mark.parametrize("schedule_factory", SCHEDULES)
-def test_schedule_holds_floor_past_total_steps(schedule_factory):
-    rates = evaluate_schedule(schedule_factory(1.0, 4, min_learning_rate=0.25), [4, 5, 100])
+def test_schedule_holds_its_endpoint_past_total_steps(schedule_factory):
+    rates = evaluate_schedule(schedule_factory(1.0, 4, final_learning_rate=0.25), [4, 5, 100])
     np.testing.assert_allclose(rates, 0.25, rtol=1e-6)
 
 
@@ -57,17 +59,9 @@ def test_schedule_reads_floatX_at_graph_build_time(schedule_factory):
 
 
 @pytest.mark.parametrize("schedule_factory", SCHEDULES)
-def test_schedule_rejects_a_floor_above_the_initial_rate(schedule_factory):
-    """The rates are adjacent positional arguments, so swapping them is easy and would otherwise produce a
-    schedule that climbs while the docstring calls it a floor."""
-    with pytest.raises(ValueError, match="min_learning_rate must not exceed learning_rate"):
-        schedule_factory(0.001, 4, 0.1)
-
-
-@pytest.mark.parametrize("schedule_factory", SCHEDULES)
-def test_schedule_accepts_an_equal_floor_as_a_constant_rate(schedule_factory):
-    # The floor check is `>`, not `>=`, so a floor equal to the initial rate is a constant schedule.
-    rates = evaluate_schedule(schedule_factory(0.1, 4, min_learning_rate=0.1), range(6))
+def test_schedule_accepts_an_equal_endpoint_as_a_constant_rate(schedule_factory):
+    # Equal endpoints are a flat schedule rather than a rejected input.
+    rates = evaluate_schedule(schedule_factory(0.1, 4, final_learning_rate=0.1), range(6))
     np.testing.assert_allclose(rates, 0.1, rtol=1e-6)
 
 
@@ -78,28 +72,30 @@ def test_schedule_rejects_empty_horizon(schedule_factory, total_steps):
         schedule_factory(1e-3, total_steps, 1e-5)
 
 
-def test_cosine_annealing_hits_curve_anchor_points():
-    # A non-zero floor exercises the affine map onto [min_learning_rate, learning_rate]: the half cosine
+def test_cosine_schedule_hits_curve_anchor_points():
+    # A non-zero floor exercises the affine map onto [final_learning_rate, learning_rate]: the half cosine
     # runs 1 -> 0.5 -> 0, so the rate runs 1.0 -> 0.625 -> 0.25.
-    rates = evaluate_schedule(cosine_annealing(1.0, 4, min_learning_rate=0.25), [0, 2, 4])
+    rates = evaluate_schedule(cosine_schedule(1.0, 4, final_learning_rate=0.25), [0, 2, 4])
     np.testing.assert_allclose(rates, [1.0, 0.625, 0.25], rtol=1e-6)
 
 
-def test_linear_decay_falls_by_a_constant_amount():
+def test_linear_schedule_falls_by_a_constant_amount():
     # The constant decrement is what separates linear from every other decay: 0.75 spread over 4 steps.
-    rates = evaluate_schedule(linear_decay(1.0, 4, min_learning_rate=0.25), range(5))
+    rates = evaluate_schedule(linear_schedule(1.0, 4, final_learning_rate=0.25), range(5))
     np.testing.assert_allclose(np.diff(rates), -0.1875, rtol=1e-6)
     np.testing.assert_allclose(rates[[0, -1]], [1.0, 0.25], rtol=1e-6)
 
 
-def test_linear_decay_holds_the_initial_rate_until_transition_begin():
+def test_linear_schedule_holds_the_initial_rate_until_transition_begin():
     # total_steps is the length of the decay itself, so the floor arrives at transition_begin + total_steps.
-    schedule = linear_decay(1.0, 4, min_learning_rate=0.25, transition_begin=3)
+    schedule = linear_schedule(1.0, 4, final_learning_rate=0.25, transition_begin=3)
     rates = evaluate_schedule(schedule, [0, 3, 4, 5, 7, 100])
     np.testing.assert_allclose(rates, [1.0, 1.0, 0.8125, 0.625, 0.25, 0.25], rtol=1e-6)
 
 
-@pytest.mark.parametrize("schedule_factory", [linear_decay, exponential_decay, polynomial_decay])
+@pytest.mark.parametrize(
+    "schedule_factory", [linear_schedule, exponential_schedule, polynomial_schedule]
+)
 def test_schedule_holds_the_initial_rate_until_transition_begin(schedule_factory):
     """Each schedule has to pass its own `transition_begin` through, so the shared clamp being right is not
     enough — asserted as a property because the curve between B and B + T differs per schedule."""
@@ -112,32 +108,34 @@ def test_schedule_holds_the_initial_rate_until_transition_begin(schedule_factory
     np.testing.assert_allclose(rates[4:], 0.25, rtol=1e-6)  # floor from step B + T
 
 
-def test_polynomial_decay_bends_with_the_power():
+def test_polynomial_schedule_bends_with_the_power():
     # (1 - p) ** 2 over four steps: quick drop, then a long flat tail.
-    rates = evaluate_schedule(polynomial_decay(1.0, 4, power=2.0), range(5))
+    rates = evaluate_schedule(polynomial_schedule(1.0, 4, power=2.0), range(5))
     np.testing.assert_allclose(rates, [1.0, 0.5625, 0.25, 0.0625, 0.0], rtol=1e-6)
 
 
-def test_polynomial_decay_at_power_one_matches_linear_decay():
-    """`linear_decay` is the `power=1` case, and the two are separate implementations, so pin the identity
+def test_polynomial_schedule_at_power_one_matches_linear_schedule():
+    """`linear_schedule` is the `power=1` case, and the two are separate implementations, so pin the identity
     rather than trusting that they stay in step."""
     steps = range(6)
     polynomial = evaluate_schedule(
-        polynomial_decay(1.0, 4, min_learning_rate=0.25, power=1.0), steps
+        polynomial_schedule(1.0, 4, final_learning_rate=0.25, power=1.0), steps
     )
-    linear = evaluate_schedule(linear_decay(1.0, 4, min_learning_rate=0.25), steps)
+    linear = evaluate_schedule(linear_schedule(1.0, 4, final_learning_rate=0.25), steps)
     np.testing.assert_allclose(polynomial, linear, rtol=1e-6)
 
 
-def test_polynomial_decay_reaches_the_floor_at_a_fractional_power():
+def test_polynomial_schedule_reaches_the_floor_at_a_fractional_power():
     # A power below one holds the rate high and then drops, and raises exactly zero to a fractional
     # exponent at the horizon, which is where a NaN would appear.
-    rates = evaluate_schedule(polynomial_decay(1.0, 4, 0.25, power=0.5), [0, 2, 4, 100])
+    rates = evaluate_schedule(polynomial_schedule(1.0, 4, 0.25, power=0.5), [0, 2, 4, 100])
     np.testing.assert_allclose(rates, [1.0, 0.75 * 2**-0.5 + 0.25, 0.25, 0.25], rtol=1e-6)
     assert rates[1] > 0.625  # above the straight line, which passes through 0.625 at the midpoint
 
 
-@pytest.mark.parametrize("schedule_factory", [linear_decay, exponential_decay, polynomial_decay])
+@pytest.mark.parametrize(
+    "schedule_factory", [linear_schedule, exponential_schedule, polynomial_schedule]
+)
 def test_delayed_schedules_agree_on_their_positional_arguments(schedule_factory):
     """Copying a call from one schedule to another must not change what it means, so the fourth positional
     argument is `transition_begin` in every schedule that takes a delay — not, say, a curve parameter."""
@@ -148,29 +146,31 @@ def test_delayed_schedules_agree_on_their_positional_arguments(schedule_factory)
 
 
 @pytest.mark.parametrize("power", [0.0, -1.0])
-def test_polynomial_decay_rejects_a_non_positive_power(power):
+def test_polynomial_schedule_rejects_a_non_positive_power(power):
     with pytest.raises(ValueError, match="power must be positive"):
-        polynomial_decay(0.1, 4, power=power)
+        polynomial_schedule(0.1, 4, power=power)
 
 
-def test_exponential_decay_falls_by_a_constant_factor():
+def test_exponential_schedule_falls_by_a_constant_factor():
     # The constant ratio is what separates geometric decay from linear: 1.0 -> 0.0625 over 4 steps halves.
-    rates = evaluate_schedule(exponential_decay(1.0, 4, 0.0625), range(5))
+    rates = evaluate_schedule(exponential_schedule(1.0, 4, 0.0625), range(5))
     np.testing.assert_allclose(rates[1:] / rates[:-1], 0.5, rtol=1e-6)
     np.testing.assert_allclose(rates[[0, -1]], [1.0, 0.0625], rtol=1e-6)
 
 
 @pytest.mark.parametrize(
-    ("learning_rate", "min_learning_rate"),
+    ("learning_rate", "final_learning_rate"),
     [(0.1, 0.0), (0.0, 0.0)],
     ids=["zero_floor", "zero_initial"],
 )
-def test_exponential_decay_rejects_a_non_positive_rate(learning_rate, min_learning_rate):
+def test_exponential_schedule_rejects_a_non_positive_rate(learning_rate, final_learning_rate):
     with pytest.raises(ValueError, match="needs positive rates"):
-        exponential_decay(learning_rate, 4, min_learning_rate)
+        exponential_schedule(learning_rate, 4, final_learning_rate)
 
 
-@pytest.mark.parametrize("schedule_factory", [linear_decay, exponential_decay, polynomial_decay])
+@pytest.mark.parametrize(
+    "schedule_factory", [linear_schedule, exponential_schedule, polynomial_schedule]
+)
 def test_schedule_rejects_negative_transition_begin(schedule_factory):
     with pytest.raises(ValueError, match="transition_begin must not be negative"):
         schedule_factory(1e-3, 10, 1e-5, transition_begin=-1)
@@ -191,7 +191,7 @@ def test_schedule_drives_training_through_the_learning_rate_union(schedule_facto
 
 
 # Geometric decay never reaches zero, so the schedule that cannot hit a zero floor sits this one out.
-@pytest.mark.parametrize("schedule_factory", [cosine_annealing, linear_decay])
+@pytest.mark.parametrize("schedule_factory", [cosine_schedule, linear_schedule])
 def test_schedule_drives_training_through_scale_by_schedule(schedule_factory):
     # Decaying to zero over two steps, every curve passes through the same midpoint, so one set of expected
     # values covers them: 0.1 -> 0.05 -> 0.
@@ -206,6 +206,107 @@ def test_schedule_drives_training_through_scale_by_schedule(schedule_factory):
     np.testing.assert_allclose(p.get_value(), [1.71], rtol=1e-6)
     step()  # step 2 -> lr = 0, p unchanged
     np.testing.assert_allclose(p.get_value(), [1.71], rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "schedule_factory",
+    [cosine_schedule, linear_schedule, exponential_schedule, polynomial_schedule],
+)
+def test_schedule_ramps_up_when_the_endpoint_is_higher(schedule_factory):
+    """The endpoint is an endpoint, not a floor, so the same schedules express warmup. This is why there is
+    no separate warmup function."""
+    rates = evaluate_schedule(schedule_factory(1e-4, 4, 1e-2), [0, 1, 2, 3, 4, 100])
+
+    # Endpoints two orders of magnitude apart: pytensor refactors the interpolation while fusing it, so
+    # under floatX=float32 the ends land within rounding rather than exactly.
+    np.testing.assert_allclose(rates[0], 1e-4, rtol=1e-5)
+    assert np.all(np.diff(rates[:5]) > 0.0)
+    np.testing.assert_allclose(rates[4:], 1e-2, rtol=1e-5)
+
+
+def test_join_schedules_gives_each_segment_its_own_step_count():
+    """Warmup into cosine decay, the standard recipe: the cosine has to start from its own step zero at the
+    boundary rather than partway down its curve."""
+    recipe = join_schedules([linear_schedule(0.0, 3, 1.0), cosine_schedule(1.0, 6)], [3])
+    rates = evaluate_schedule(recipe, range(10))
+
+    np.testing.assert_allclose(
+        rates[:4], [0.0, 1 / 3, 2 / 3, 1.0], rtol=1e-6
+    )  # ramp, peaking at the handoff
+    np.testing.assert_allclose(rates[3], 1.0, rtol=1e-6)  # cosine restarts at its initial rate
+    np.testing.assert_allclose(rates[9], 0.0, rtol=1e-6)  # and reaches its endpoint 6 steps later
+    assert np.all(np.diff(rates[3:10]) < 0.0)
+
+
+def test_join_schedules_switches_at_every_boundary():
+    joined = join_schedules(
+        [constant_schedule(1.0), constant_schedule(0.5), constant_schedule(0.25)], [2, 5]
+    )
+    rates = evaluate_schedule(joined, range(7))
+    np.testing.assert_allclose(rates, [1.0, 1.0, 0.5, 0.5, 0.5, 0.25, 0.25], rtol=1e-6)
+
+
+def test_join_schedules_with_one_schedule_is_that_schedule():
+    steps = range(6)
+    joined = evaluate_schedule(join_schedules([linear_schedule(1.0, 4)], []), steps)
+    alone = evaluate_schedule(linear_schedule(1.0, 4), steps)
+    np.testing.assert_allclose(joined, alone, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        *(factory(0.5, 4, 0.05) for factory in SCHEDULES),
+        step_decay(0.5, decay_every=2),
+        constant_schedule(0.5),
+    ],
+    ids=["cosine", "linear", "exponential", "polynomial", "step", "constant"],
+)
+def test_schedule_tolerates_a_negative_step_count(schedule):
+    """`join_schedules` evaluates every segment and selects, so a later schedule is called with a negative
+    count before its boundary. Each one has to return something finite rather than a NaN."""
+    rates = evaluate_schedule(schedule, [-100, -1])
+    assert np.all(np.isfinite(rates))
+    np.testing.assert_allclose(rates, rates[0], rtol=1e-6)  # held at the pre-horizon value
+
+
+def test_join_schedules_drives_training_through_the_learning_rate_union():
+    """The composed schedule has to survive substitution into a rule, which is how anyone would actually
+    use warmup followed by decay."""
+    p = trainable(np.array([2.0]), name="w")
+    loss = 0.5 * (p**2).sum()  # grad = p, so the unit-rate base step is -p
+    recipe = join_schedules([constant_schedule(0.1), linear_schedule(0.1, 2)], [2])
+    step = compile_train(loss, sgd(learning_rate=recipe))
+
+    step()  # constant segment: p = 2 - 0.1 * 2
+    np.testing.assert_allclose(p.get_value(), [1.8], rtol=1e-6)
+    step()
+    step()  # boundary passed, linear segment at its own step 0, still 0.1
+    np.testing.assert_allclose(p.get_value(), [1.8 * 0.9 * 0.9], rtol=1e-6)
+
+
+def test_constant_schedule_holds_its_rate():
+    rates = evaluate_schedule(constant_schedule(0.25), [0, 1, 10_000])
+    np.testing.assert_allclose(rates, 0.25, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("schedules", "boundaries", "message"),
+    [
+        ([], [], "at least one schedule"),
+        ([constant_schedule(1.0), constant_schedule(0.5)], [], "one fewer boundary"),
+        ([constant_schedule(1.0), constant_schedule(0.5)], [0], "must be positive"),
+        (
+            [constant_schedule(1.0), constant_schedule(0.5), constant_schedule(0.25)],
+            [5, 2],
+            "strictly increasing",
+        ),
+    ],
+    ids=["empty", "boundary_count", "non_positive", "not_increasing"],
+)
+def test_join_schedules_rejects_a_malformed_sequence(schedules, boundaries, message):
+    with pytest.raises(ValueError, match=message):
+        join_schedules(schedules, boundaries)
 
 
 # step_decay decays indefinitely instead of over a horizon, so it takes (decay_every, decay_factor) rather
@@ -267,8 +368,3 @@ def test_step_decay_rejects_a_non_positive_interval(decay_every):
 def test_step_decay_rejects_a_factor_outside_the_unit_interval(decay_factor):
     with pytest.raises(ValueError, match=r"decay_factor must be in \(0, 1]"):
         step_decay(1.0, decay_every=3, decay_factor=decay_factor)
-
-
-def test_step_decay_rejects_a_floor_above_the_initial_rate():
-    with pytest.raises(ValueError, match="min_learning_rate must not exceed learning_rate"):
-        step_decay(0.001, decay_every=3, min_learning_rate=0.1)
