@@ -61,8 +61,8 @@ def cosine_schedule(
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
 
     Examples
     --------
@@ -125,8 +125,8 @@ def linear_schedule(
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
     """
     _validate_horizon(total_steps, transition_begin)
 
@@ -179,8 +179,8 @@ def exponential_schedule(
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
     """
     _validate_horizon(total_steps, transition_begin)
     if final_learning_rate <= 0.0 or learning_rate <= 0.0:
@@ -242,8 +242,8 @@ def polynomial_schedule(
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
     """
     _validate_horizon(total_steps, transition_begin)
     if power <= 0.0:
@@ -300,8 +300,8 @@ def step_decay(
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
     """
     if decay_every < 1:
         raise ValueError(f"decay_every must be at least 1, got {decay_every}.")
@@ -337,8 +337,8 @@ def constant_schedule(learning_rate: float) -> Schedule:
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
     """
 
     def schedule(step_count: TensorVariable) -> TensorVariable:
@@ -374,8 +374,8 @@ def join_schedules(schedules: Sequence[Schedule], boundaries: Sequence[int]) -> 
     Returns
     -------
     Schedule
-        A callable mapping the symbolic step count to a scalar learning rate, for
-        :func:`~pytensor_ml.optim.transform.scale_by_schedule`.
+        A callable mapping a symbolic step count to a scalar learning rate, ready to hand to a rule as
+        its ``learning_rate``.
     """
     if not schedules:
         raise ValueError("join_schedules needs at least one schedule.")
