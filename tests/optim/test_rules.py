@@ -156,11 +156,32 @@ def test_adam_updates_keyed_by_object_with_named_state():
     """State is discovered by object identity; names exist only for serialization."""
     p = trainable(np.zeros(3), name="w")
     loss = (p**2).sum()
-    updates = adam_updates(loss, [p])
+    updates = adam_updates(loss, [p], amsgrad=True)
 
     assert p in updates  # the exact param object is a key, not a renamed copy
     state_names = {key.name for key in updates if key is not p}
-    assert state_names == {"adam/step_count", "w/adam/first_moment", "w/adam/second_moment"}
+    assert state_names == {
+        "adam/step_count",
+        "w/adam/first_moment",
+        "w/adam/second_moment",
+        "w/adam/max_second_moment",
+    }
+
+
+def test_adamw_names_its_own_state():
+    """adamw keeps adam's moments but not adam's names: a rule-wide name shared between two rules collides
+    when both appear in one training step, and reads as adam's state in a checkpoint."""
+    p = trainable(np.zeros(3), name="w")
+    loss = (p**2).sum()
+    updates = adamw_updates(loss, [p], amsgrad=True)
+
+    state_names = {key.name for key in updates if key is not p}
+    assert state_names == {
+        "adamw/step_count",
+        "w/adamw/first_moment",
+        "w/adamw/second_moment",
+        "w/adamw/max_second_moment",
+    }
 
 
 @pytest.mark.parametrize(
