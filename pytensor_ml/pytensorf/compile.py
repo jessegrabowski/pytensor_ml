@@ -1,10 +1,11 @@
+import warnings
+
 from collections.abc import Sequence
-from typing import cast
 
 import pytensor
 
 from pytensor import Mode
-from pytensor.compile import Function, SharedVariable, get_mode
+from pytensor.compile import Function, get_mode
 from pytensor.tensor.variable import Variable
 
 from pytensor_ml.pytensorf.collect import collect_graph_inputs
@@ -13,6 +14,8 @@ from pytensor_ml.pytensorf.rng import (
     SeedSequenceSeed,
     atleast_list,
     collect_default_updates,
+    find_generators_drawn_from,
+    find_rng_nodes,
     reseed_rngs,
 )
 
@@ -37,8 +40,9 @@ def function(
     outputs : Variable or list of Variable
         Outputs of the compiled function.
     random_seed : int, array-like of int, or SeedSequence, optional
-        Seed used to reseed the graph's shared generators. They are replaced whether or not a seed is
-        given, so omitting it reseeds from fresh entropy rather than leaving them untouched.
+        Seed used to replace the graph's shared generators, making the compiled function's draws
+        reproducible. The generators are left as they are when omitted, so compiling has no effect on a
+        generator the caller seeded, or on one another function is drawing from.
     mode : Mode or str, optional
         PyTensor mode used to compile the function.
     **kwargs
@@ -49,16 +53,39 @@ def function(
     Function
         The compiled function.
     """
-    rng_updates = collect_default_updates(
-        inputs=[inp.variable if isinstance(inp, pytensor.In) else inp for inp in inputs],
-        outputs=[
-            out.variable if isinstance(out, pytensor.Out) else out for out in atleast_list(outputs)
-        ],
-    )
+    updates = dict(kwargs.pop("updates", {}))
+    input_variables = [inp.variable if isinstance(inp, pytensor.In) else inp for inp in inputs]
+    # Updates count as readers: a generator a rule draws its noise from is read by the update expression
+    # and often by nothing else, and one read by both an output and an update is read twice.
+    read_variables = [
+        *(out.variable if isinstance(out, pytensor.Out) else out for out in atleast_list(outputs)),
+        *updates.values(),
+    ]
 
-    if rng_updates:
-        rngs = cast(list[SharedVariable], list(rng_updates))
-        reseed_rngs(rngs, random_seed)
+    if random_seed is not None:
+        reseed_rngs(find_rng_nodes(read_variables), random_seed)
+
+    with warnings.catch_warnings():
+        # This warns for a generator with several distinct draws and returns no update for it. The check
+        # below reports that better, and only once the caller's own updates are known.
+        warnings.filterwarnings(
+            "ignore", message="RNG Variable .* multiple distinct clients", category=UserWarning
+        )
+        rng_updates = collect_default_updates(inputs=input_variables, outputs=read_variables)
+
+    frozen = [
+        generator
+        for generator in find_generators_drawn_from(read_variables)
+        if generator not in rng_updates and generator not in updates
+    ]
+    if frozen:
+        raise ValueError(
+            f"The graph draws from {[str(generator.name or generator) for generator in frozen]}, which "
+            "nothing advances, so every call would repeat the same values. A generator read by two "
+            "different draws has no single next state, which is the usual cause. Give each draw its own "
+            "generator, thread one through with `next_rng, draw = pt.random.normal(rng=rng, "
+            "return_next_rng=True)`, or pass an update for it yourself."
+        )
 
     base_mode = get_mode(mode)
     mode = Mode(
@@ -69,7 +96,7 @@ def function(
     return pytensor.function(
         inputs,
         outputs,
-        updates={**rng_updates, **kwargs.pop("updates", {})},
+        updates={**rng_updates, **updates},
         mode=mode,
         **kwargs,
     )
