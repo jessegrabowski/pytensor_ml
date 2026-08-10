@@ -16,6 +16,7 @@ from pytensor_ml.pytensorf import (
     collect_trainable_params,
     rewrite_for_prediction,
 )
+from pytensor_ml.state import CustomInitializer, NormalInitializer, initialize_params
 
 floatX = pytensor.config.floatX
 
@@ -344,3 +345,124 @@ def test_batch_norm_variants_agree_on_output_arity():
     # batch statistics but must not write them anywhere.
     assert len(tracked.owner.outputs) == len(untracked.owner.outputs)
     assert collect_non_trainable_updates(untracked) == {}
+
+
+# Every parameter a layer owns, and the value a network-wide scheme must leave it at. A scheme reaching a
+# batch-norm scale would rescale a normalized activation by a random factor, defeating the layer; reaching a
+# bias would undo the zero start these layers are documented to have.
+FEATURES = pt.tensor("features", shape=(None, 4), dtype=floatX)
+IDS = pt.tensor("ids", shape=(None, 4), dtype="int32")
+
+DECLARED_BY_LAYERS = {
+    "Linear": (lambda: Linear("fc", n_in=4, n_out=4), FEATURES, {"fc_W": None, "fc_b": 0.0}),
+    "Embedding": (
+        lambda: Embedding("emb", n_embeddings=6, n_features=4),
+        IDS,
+        {"emb_W": None},
+    ),
+    "BatchNorm2D": (lambda: BatchNorm2D("bn", n_in=4), FEATURES, {"bn_scale": 1.0, "bn_loc": 0.0}),
+    "LayerNorm": (lambda: LayerNorm("ln", n_in=4), FEATURES, {"ln_scale": 1.0, "ln_loc": 0.0}),
+}
+
+
+@pytest.mark.parametrize("layer_name", sorted(DECLARED_BY_LAYERS), ids=sorted(DECLARED_BY_LAYERS))
+def test_a_layer_declares_the_initializers_its_parameters_need(layer_name):
+    """A parameter whose starting value is part of the layer's definition declares an initializer, so a
+    network-wide scheme passes it by. The scheme here returns a sentinel, so any parameter it reaches is
+    obvious and any declaration that stopped working shows up as that sentinel."""
+    build, layer_input, expected = DECLARED_BY_LAYERS[layer_name]
+    prediction = build()(layer_input)
+
+    sentinel = 7.0
+    reached_by_the_scheme = CustomInitializer(
+        lambda shape, dtype, rng: np.full(shape, sentinel, dtype=dtype)
+    )
+    params = collect_trainable_params(prediction)
+    values = initialize_params(params, scheme=reached_by_the_scheme, rng=0)
+
+    assert {p.name for p in params} == set(expected)
+    for param, value in zip(params, values):
+        if expected[param.name] is None:
+            np.testing.assert_allclose(value, sentinel)  # no declaration: the scheme applies
+        else:
+            np.testing.assert_allclose(value, expected[param.name])
+
+
+# One case per keyword: the layer to build with it, the parameter it must reach, and the parameters it must
+# leave alone. A keyword that hits the wrong parameter, or that quietly strips a sibling's declaration, is
+# the failure this is aimed at.
+INITIALIZER_KEYWORDS = {
+    "Linear.weight": (
+        lambda init: Linear("fc", n_in=4, n_out=4, weight_initializer=init),
+        FEATURES,
+        "fc_W",
+        {"fc_b": 0.0},
+    ),
+    "Linear.bias": (
+        lambda init: Linear("fc", n_in=4, n_out=4, bias_initializer=init),
+        FEATURES,
+        "fc_b",
+        {
+            "fc_W": 0.0
+        },  # the scheme's value: a bias initializer reaching the weight would show up here
+    ),
+    "Embedding.weight": (
+        lambda init: Embedding("emb", n_embeddings=6, n_features=4, weight_initializer=init),
+        IDS,
+        "emb_W",
+        {},
+    ),
+    "BatchNorm2D.scale": (
+        lambda init: BatchNorm2D("bn", n_in=4, scale_initializer=init),
+        FEATURES,
+        "bn_scale",
+        {"bn_loc": 0.0},
+    ),
+    "BatchNorm2D.loc": (
+        lambda init: BatchNorm2D("bn", n_in=4, loc_initializer=init),
+        FEATURES,
+        "bn_loc",
+        {"bn_scale": 1.0},
+    ),
+    "LayerNorm.scale": (
+        lambda init: LayerNorm("ln", n_in=4, scale_initializer=init),
+        FEATURES,
+        "ln_scale",
+        {"ln_loc": 0.0},
+    ),
+    "LayerNorm.loc": (
+        lambda init: LayerNorm("ln", n_in=4, loc_initializer=init),
+        FEATURES,
+        "ln_loc",
+        {"ln_scale": 1.0},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(INITIALIZER_KEYWORDS), ids=sorted(INITIALIZER_KEYWORDS))
+def test_an_initializer_keyword_reaches_only_the_parameter_it_names(case):
+    build, layer_input, target, siblings = INITIALIZER_KEYWORDS[case]
+    sentinel = 7.0
+    layer = build(
+        CustomInitializer(lambda shape, dtype, rng: np.full(shape, sentinel, dtype=dtype))
+    )
+    prediction = layer(layer_input)
+
+    params = collect_trainable_params(prediction)
+    values = dict(zip((p.name for p in params), initialize_params(params, scheme="zeros", rng=0)))
+
+    np.testing.assert_allclose(values[target], sentinel)
+    for name, expected in siblings.items():
+        np.testing.assert_allclose(values[name], expected)
+
+
+def test_a_bias_initializer_replaces_the_zero_declaration_rather_than_fighting_it():
+    """The keyword becomes the declaration, so it survives a network-wide scheme the same way the zero it
+    replaced did. torch draws biases from a fan-scaled uniform, and this is how you say that here."""
+    layer = Linear("fc", n_in=4, n_out=4, bias_initializer=NormalInitializer(0.0, 1.0))
+    prediction = layer(pt.tensor("features", shape=(None, 4), dtype=floatX))
+
+    params = collect_trainable_params(prediction)
+    values = dict(zip((p.name for p in params), initialize_params(params, scheme="zeros", rng=0)))
+
+    assert not np.allclose(values["fc_b"], 0.0)

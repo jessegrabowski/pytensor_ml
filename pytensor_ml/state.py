@@ -11,7 +11,9 @@ from pytensor_ml.pytensorf import RandomSeed
 
 RandomState = RandomSeed | np.random.RandomState | np.random.Generator
 
-InitializationScheme = Literal["zeros", "ones", "xavier_uniform", "xavier_normal", "unit_uniform"]
+InitializationScheme = Literal[
+    "zeros", "ones", "xavier_uniform", "xavier_normal", "unit_uniform", "normal"
+]
 
 SamplingFunction = Callable[[tuple[int, ...], str, np.random.Generator], np.ndarray]
 
@@ -55,6 +57,30 @@ class UnitUniformInitializer(Initializer):
         return rng.uniform(0.0, 1.0, size=shape).astype(dtype)
 
 
+class NormalInitializer(Initializer):
+    r"""
+    Draw every element from :math:`\mathcal{N}(\mu, \sigma^2)`, independent of the parameter's shape.
+
+    The fan-scaled initializers derive their spread from the shape; this one is told it, which is what a
+    reference implementation quoting a specific standard deviation needs -- GPT-2 initializes its embeddings
+    and weights from ``NormalInitializer(0.0, 0.02)`` whatever their fans work out to.
+
+    Parameters
+    ----------
+    mean : float
+        Center of the distribution :math:`\mu`. Default 0.0.
+    std : float
+        Standard deviation :math:`\sigma`. Default 0.01.
+    """
+
+    def __init__(self, mean: float = 0.0, std: float = 0.01):
+        self.mean = mean
+        self.std = std
+
+    def sample(self, shape: tuple[int, ...], dtype: str, rng: np.random.Generator) -> np.ndarray:
+        return rng.normal(self.mean, self.std, size=shape).astype(dtype)
+
+
 def fans(shape: tuple[int, ...]) -> tuple[int, int]:
     r"""
     Return the number of units feeding into and out of one position of a parameter of ``shape``.
@@ -93,6 +119,18 @@ def fans(shape: tuple[int, ...]) -> tuple[int, int]:
 
 
 class XavierUniformInitializer(Initializer):
+    r"""
+    Draw from :math:`\mathcal{U}(\pm\sqrt{6 / (\text{fan\_in} + \text{fan\_out})})`.
+
+    The bound is chosen so the variance of the activations, and of the gradients flowing back, stays roughly
+    constant through depth. Also called Glorot initialization.
+
+    References
+    ----------
+    .. [1] Glorot, X. and Bengio, Y. (2010). Understanding the difficulty of training deep feedforward
+           neural networks. Proceedings of AISTATS, 249-256.
+    """
+
     def sample(self, shape: tuple[int, ...], dtype: str, rng: np.random.Generator) -> np.ndarray:
         fan_in, fan_out = fans(shape)
         scale = np.sqrt(6.0 / (fan_in + fan_out))
@@ -100,6 +138,17 @@ class XavierUniformInitializer(Initializer):
 
 
 class XavierNormalInitializer(Initializer):
+    r"""
+    Draw from :math:`\mathcal{N}(0, 2 / (\text{fan\_in} + \text{fan\_out}))`.
+
+    The normal counterpart of :class:`XavierUniformInitializer`, targeting the same variance.
+
+    References
+    ----------
+    .. [1] Glorot, X. and Bengio, Y. (2010). Understanding the difficulty of training deep feedforward
+           neural networks. Proceedings of AISTATS, 249-256.
+    """
+
     def sample(self, shape: tuple[int, ...], dtype: str, rng: np.random.Generator) -> np.ndarray:
         fan_in, fan_out = fans(shape)
         scale = np.sqrt(2.0 / (fan_in + fan_out))
@@ -129,6 +178,8 @@ _INITIALIZERS: dict[str, type[Initializer]] = {
     "xavier_uniform": XavierUniformInitializer,
     "xavier_normal": XavierNormalInitializer,
     "unit_uniform": UnitUniformInitializer,
+    # Reachable by name because both of its arguments have defaults; pass an instance for anything else.
+    "normal": NormalInitializer,
 }
 
 InitializationSchemeLike = InitializationScheme | Initializer
