@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
 
 import numpy as np
@@ -126,8 +126,7 @@ def fans(shape: tuple[int, ...]) -> tuple[int, int]:
         raise ValueError(
             f"A fan-scaled initializer needs a parameter of at least two dimensions to size its draws, but "
             f"got shape {shape}. A bias or a norm scale has no fans; give it an initializer of its own -- "
-            "`trainable(value, name, initializer=ZeroInitializer())` -- or initialize it with the 'zeros' "
-            "or 'ones' scheme."
+            "`trainable(value, name, initializer=ZeroInitializer())`."
         )
     receptive_field = int(np.prod(shape[2:]))
     return shape[0] * receptive_field, shape[1] * receptive_field
@@ -187,87 +186,66 @@ class CustomInitializer(Initializer):
         return self._sample_fn(shape, dtype, rng)
 
 
+# The name of each initializer, for the config a network is serialized to: an initializer crosses that
+# boundary as a name, since a class cannot. Every entry must construct with no arguments to come back.
 _INITIALIZERS: dict[str, type[Initializer]] = {
     "zeros": ZeroInitializer,
     "ones": OneInitializer,
     "xavier_uniform": XavierUniformInitializer,
     "xavier_normal": XavierNormalInitializer,
     "unit_uniform": UnitUniformInitializer,
-    # Reachable by name because both of its arguments have defaults; pass an instance for anything else.
     "normal": NormalInitializer,
 }
 
-InitializationSchemeLike = InitializationScheme | Initializer
 
+def _initializer_for(
+    param: SharedVariable, initializers: Mapping[SharedVariable, Initializer]
+) -> Initializer:
+    """The initializer to draw ``param`` with: one named for it, else the one it declares."""
+    if param in initializers:
+        return initializers[param]
 
-def _declared_initializer(param: SharedVariable, default: Initializer) -> Initializer:
-    """The parameter's own initializer, or ``default`` when it does not declare one."""
     declared = param.initializer if isinstance(param, TrainableParameter) else None
-    return default if declared is None else declared
-
-
-def _resolve_scheme(scheme: InitializationSchemeLike) -> Initializer:
-    """The initializer a scheme names, or the instance itself when one was passed."""
-    return scheme if isinstance(scheme, Initializer) else _INITIALIZERS[scheme]()
-
-
-def require_varying_scheme(scheme: InitializationSchemeLike) -> None:
-    """
-    Raise if ``scheme`` would give every weight matrix in a network the same value.
-
-    A constant is the right initializer for a bias or a norm scale and never for a whole network: identical
-    weights leave no gradient to distinguish two units in a layer, so there is no symmetry for training to
-    break. Declare it on the parameter that wants it instead.
-
-    Parameters
-    ----------
-    scheme : str or Initializer
-        The scheme about to be applied to every parameter that declares nothing.
-    """
-    if isinstance(_resolve_scheme(scheme), ZeroInitializer | OneInitializer):
-        name = scheme if isinstance(scheme, str) else type(scheme).__name__
+    if declared is None:
         raise ValueError(
-            f"{name!r} gives every weight matrix the same value, so no gradient distinguishes two units in "
-            "a layer and training cannot break the symmetry. A constant belongs on one parameter rather "
-            "than on a network: declare it where that parameter is built, as in "
-            "`Linear(..., weight_initializer=ZeroInitializer())`."
+            f"{param.name!r} declares no initializer, so there is no law to redraw it from. Every layer in "
+            "this library declares one for each parameter it builds; a parameter built by hand needs the "
+            "same -- `trainable(value, name, initializer=XavierNormalInitializer())` -- or an entry naming "
+            "it in `initializers={parameter: XavierNormalInitializer()}`."
         )
+    return declared
 
 
 def initialize_params(
     params: Sequence[SharedVariable],
-    scheme: InitializationSchemeLike = "xavier_normal",
     rng: RandomState | None = None,
+    initializers: Mapping[SharedVariable, Initializer] | None = None,
 ) -> list[np.ndarray]:
     """
-    Initialize parameter values using the specified scheme.
+    Redraw each parameter from its own initializer, or from the one ``initializers`` names for it.
 
-    A :class:`~pytensor_ml.params.TrainableParameter` that declares its own ``initializer`` uses it
-    instead of ``scheme``, leaving batch norm at its unit scale while the weight matrices around it are
-    drawn from the requested scheme. Call an :class:`Initializer` on a parameter directly to overwrite a
-    declared value anyway.
+    Every parameter carries the law its value comes from, so there is nothing to decide here beyond the
+    seed: a batch norm layer redraws to its unit scale, a bias to zero, and a weight matrix to a fresh
+    Xavier draw. Pass ``initializers`` to draw a particular parameter some other way.
 
     Parameters
     ----------
-    params
-        SharedVariables to initialize values for.
-    scheme
-        Initialization scheme for parameters that do not declare one: the name of a built-in scheme, or
-        any :class:`Initializer` instance (including a :class:`CustomInitializer` wrapping your own
-        sampling function).
-    rng
-        Random number generator. If None, a new one is created.
+    params : sequence of SharedVariable
+        Parameters to draw values for. Each must declare an initializer or be named in ``initializers``.
+    rng : int or numpy Generator, optional
+        Random number generator. A fresh one is created when omitted.
+    initializers : dict mapping parameter to Initializer, optional
+        How to draw specific parameters, taking precedence over what they declare. Keyed by the parameter
+        itself rather than its name, so nothing here depends on how a layer names what it builds.
 
     Returns
     -------
-    list of np.ndarray
-        Initialized values matching the shapes and dtypes of params.
+    list of ndarray
+        Drawn values, matching the shapes and dtypes of ``params``.
     """
     # Resolve once and share: a seed handed to each _sample_like call would repeat draws across parameters.
     rng = np.random.default_rng(rng)
+    if initializers is None:
+        initializers = {}
 
-    initializer = _resolve_scheme(scheme)
-    return [
-        _declared_initializer(param, default=initializer)._sample_like(param, rng)
-        for param in params
-    ]
+    return [_initializer_for(param, initializers)._sample_like(param, rng) for param in params]
