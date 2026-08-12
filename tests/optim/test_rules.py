@@ -201,6 +201,30 @@ def test_adamw_names_its_own_state():
     }
 
 
+def test_adam_and_adamw_in_one_step_keep_separate_state():
+    """The collision the name test above describes in prose, actually run. Both rules derive every slot from
+    one namespace argument, so a namespace that defaulted or went missing would hand them the same memoized
+    buffers -- and sharing a step counter is invisible, since both write the same increment to it."""
+    by_adam = trainable(np.array([1.0, -2.0]), name="by_adam")
+    by_adamw = trainable(np.array([1.0, -2.0]), name="by_adamw")
+    loss = 0.5 * (by_adam**2).sum() + 0.5 * (by_adamw**2).sum()
+
+    adam_state = adam_updates(loss, [by_adam], learning_rate=0.1, amsgrad=True)
+    adamw_state = adamw_updates(loss, [by_adamw], learning_rate=0.1, amsgrad=True)
+
+    assert not set(adam_state) & set(
+        adamw_state
+    )  # not one buffer between them, including the counter
+    function([], loss, updates={**adam_state, **adamw_state})()
+
+    counters = {
+        key.name: key.get_value()
+        for key in (*adam_state, *adamw_state)
+        if key.name.endswith("step_count")
+    }
+    assert counters == {"adam/step_count": 1, "adamw/step_count": 1}
+
+
 @pytest.mark.parametrize(
     "make_rule",
     [lambda: adam(learning_rate=1e-2), lambda: sgd(learning_rate=1e-2, momentum=0.9)],
@@ -290,6 +314,26 @@ def test_adamw_mask_excludes_parameters_from_decay():
 
     np.testing.assert_allclose(w.get_value() - 2.0, -lr * (1.0 + weight_decay * 2.0), rtol=RTOL)
     np.testing.assert_allclose(b.get_value() - 2.0, -lr * 1.0, rtol=RTOL)
+
+
+def test_adamw_without_decay_is_adam():
+    """The decoupled decay term is the *only* difference between the two rules, which is what lets them share
+    an implementation. Run over enough steps that the moments, the bias corrections and the accumulated
+    trajectory all have to agree, and compare exactly: with no decay these are meant to be the same
+    computation, not merely close, so the two drifting apart at all means they stopped sharing it."""
+    start = np.array([1.5, -0.5, 2.0])
+    by_adam = trainable(start.copy(), name="by_adam")
+    by_adamw = trainable(start.copy(), name="by_adamw")
+
+    adam_step = function([], [], updates=adam_updates(0.5 * (by_adam**2).sum(), [by_adam]))
+    adamw_step = function(
+        [], [], updates=adamw_updates(0.5 * (by_adamw**2).sum(), [by_adamw], weight_decay=0.0)
+    )
+    for _ in range(20):
+        adam_step()
+        adamw_step()
+
+    np.testing.assert_array_equal(by_adamw.get_value(), by_adam.get_value())
 
 
 def test_adagrad_step_decays_as_inverse_sqrt_t():
