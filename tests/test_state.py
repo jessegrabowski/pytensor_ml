@@ -9,7 +9,6 @@ from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import collect_trainable_params
 from pytensor_ml.state import (
     _INITIALIZERS,
-    CustomInitializer,
     InitializationScheme,
     Initializer,
     NormalInitializer,
@@ -20,12 +19,9 @@ from pytensor_ml.state import (
     ZeroInitializer,
     fans,
     initialize_params,
+    initializer,
 )
-
-
-def unit_constant() -> CustomInitializer:
-    """An initializer whose draws are unmistakable, so a value says which source produced it."""
-    return CustomInitializer(lambda shape, dtype, rng: np.full(shape, 7.0, dtype=dtype))
+from tests.conftest import constant
 
 
 def test_every_registered_name_maps_to_a_class_that_needs_no_arguments():
@@ -86,14 +82,13 @@ class TestInitializeParams:
 
         assert not np.array_equal(values[0], values[1])
 
-    def test_accepts_a_custom_initializer(self):
+    def test_accepts_an_initializer_built_from_a_function(self):
         params = [
             trainable(np.zeros((4, 4), dtype="float64"), "first"),
             trainable(np.zeros((4, 2), dtype="float64"), "second"),
         ]
-        constant = CustomInitializer(lambda shape, dtype, rng: np.full(shape, 7.0, dtype=dtype))
 
-        values = initialize_params(params, initializers=dict.fromkeys(params, constant))
+        values = initialize_params(params, initializers=dict.fromkeys(params, constant(value=7.0)))
 
         assert len(values) == len(params)
         for val in values:
@@ -120,7 +115,7 @@ class TestDeclaredInitializers:
     def test_naming_a_parameter_that_declares_nothing_is_enough(self):
         weight = trainable(np.zeros((4, 4), dtype="float64"), "weight")
 
-        [value] = initialize_params([weight], rng=0, initializers={weight: unit_constant()})
+        [value] = initialize_params([weight], rng=0, initializers={weight: constant(value=7.0)})
 
         np.testing.assert_array_equal(value, 7.0)
 
@@ -132,7 +127,7 @@ class TestDeclaredInitializers:
         with pytest.raises(ValueError, match="'state' declares no initializer"):
             initialize_params([state], rng=0)
 
-        [value] = initialize_params([state], rng=0, initializers={state: unit_constant()})
+        [value] = initialize_params([state], rng=0, initializers={state: constant(value=7.0)})
         np.testing.assert_array_equal(value, 7.0)
 
     def test_calling_an_initializer_overrides_a_declaration(self):
@@ -254,7 +249,7 @@ class TestPerParameterInitializers:
         # thing that should, since the caller picked this parameter rather than every parameter.
         scale = trainable(np.zeros(4, dtype="float64"), "scale", initializer=OneInitializer())
 
-        [value] = initialize_params([scale], initializers={scale: unit_constant()}, rng=0)
+        [value] = initialize_params([scale], initializers={scale: constant(value=7.0)}, rng=0)
 
         np.testing.assert_allclose(value, 7.0)
 
@@ -263,7 +258,7 @@ class TestPerParameterInitializers:
         weight = trainable(np.zeros((4, 4), dtype="float64"), "w", initializer=ZeroInitializer())
 
         scale_value, weight_value = initialize_params(
-            [scale, weight], initializers={weight: unit_constant()}, rng=0
+            [scale, weight], initializers={weight: constant(value=7.0)}, rng=0
         )
 
         np.testing.assert_allclose(
@@ -279,7 +274,7 @@ class TestPerParameterInitializers:
         second = trainable(np.zeros((4, 4), dtype="float64"), "w", initializer=declared)
 
         first_value, second_value = initialize_params(
-            [first, second], initializers={first: unit_constant()}, rng=0
+            [first, second], initializers={first: constant(value=7.0)}, rng=0
         )
 
         np.testing.assert_allclose(first_value, 7.0)
@@ -291,6 +286,140 @@ class TestPerParameterInitializers:
         weight = trainable(np.zeros((4, 4), dtype="float64"), "w", initializer=ZeroInitializer())
         elsewhere = trainable(np.zeros((4, 4), dtype="float64"), "elsewhere")
 
-        [value] = initialize_params([weight], initializers={elsewhere: unit_constant()}, rng=0)
+        [value] = initialize_params([weight], initializers={elsewhere: constant(value=7.0)}, rng=0)
 
         np.testing.assert_allclose(value, 0.0)
+
+
+class TestInitializerDecorator:
+    def test_a_scaled_sampler_gets_its_fans_from_the_shape(self):
+        """Nothing is supplied but the draw's two arguments, so a fan-scaled sampler computes its own. This
+        also pins that `fans` reads the leading dimension as the fan-in, matching how layers build weights."""
+
+        @initializer
+        def fan_in_fill(rng, shape):
+            fan_in, _ = fans(shape)
+            return np.full(shape, fan_in)
+
+        value = fan_in_fill().sample((4, 6), "float64", np.random.default_rng(0))
+
+        np.testing.assert_array_equal(value, 4)
+
+    @pytest.mark.parametrize(
+        "source",
+        ["def sampler(shape, rng): ...", "def sampler(shape): ...", "def sampler(): ..."],
+        ids=["wrong_order", "rng_missing", "neither"],
+    )
+    def test_requires_the_draw_arguments_first(self, source):
+        """Position is the contract, so a sampler that ignores `rng` still declares it. Caught at decoration,
+        naming what was declared, rather than as a confusing argument mismatch on the first draw."""
+        namespace: dict = {}
+        exec(source, namespace)
+
+        with pytest.raises(ValueError, match="must take rng and shape as its first two parameters"):
+            initializer(namespace["sampler"])
+
+    def test_the_draw_arguments_arrive_in_that_order(self):
+        """Cheap to get backwards, and a swap would hand `rng` a tuple. A real draw off the generator, sized
+        by the shape, is only possible if both arrived as themselves."""
+
+        @initializer
+        def drawn(rng, shape):
+            return rng.normal(size=shape)
+
+        value = drawn().sample((3,), "float64", np.random.default_rng(0))
+
+        assert value.shape == (3,)
+        assert len(np.unique(value)) == 3
+
+    def test_the_dtype_is_applied_for_the_sampler(self):
+        """The ergonomic point of taking dtype out of the signature: numpy defaults to float64, and a float64
+        array assigned to a float32 parameter raises about container precision, naming no initializer."""
+
+        @initializer
+        def float64_fill(rng, shape):
+            return np.full(shape, 7.0)
+
+        assert float64_fill().sample((2,), "float32", np.random.default_rng(0)).dtype == np.float32
+
+    def test_a_parameter_with_a_default_may_be_omitted(self):
+        @initializer
+        def scaled(rng, shape, factor=2.0):
+            return np.full(shape, factor)
+
+        rng = np.random.default_rng(0)
+
+        np.testing.assert_array_equal(scaled().sample((2,), "float64", rng), 2.0)
+        np.testing.assert_array_equal(scaled(factor=5.0).sample((2,), "float64", rng), 5.0)
+
+    def test_every_name_after_the_draw_arguments_is_a_parameter(self):
+        """The promise of reading the signature: parameters are whatever you call them. No name is reserved
+        and none has to be marked out -- position decides, and everything past the first two is yours."""
+
+        @initializer
+        def mine(rng, shape, foo):
+            return np.full(shape, foo)
+
+        assert mine.__props__ == ("foo",)
+        np.testing.assert_array_equal(
+            mine(foo=42).sample((2,), "float64", np.random.default_rng(0)), 42
+        )
+
+    def test_one_initializer_draws_correctly_for_every_shape_it_is_used_on(self):
+        """Parameters are frozen at construction, so anything that varies with the parameter being drawn has
+        to be derived per draw. One instance reused across two layers is the ordinary case, and a shape-
+        dependent value cached on the instance would serve the second layer the first one's number."""
+
+        @initializer
+        def fan_in_fill(rng, shape):
+            fan_in, _ = fans(shape)
+            return np.full(shape, fan_in)
+
+        drawn = fan_in_fill()
+
+        np.testing.assert_array_equal(drawn.sample((4, 6), "float64", np.random.default_rng(0)), 4)
+        np.testing.assert_array_equal(drawn.sample((8, 2), "float64", np.random.default_rng(0)), 8)
+
+    def test_a_draw_that_forgot_the_shape_says_so(self):
+        """The mistake omitting `shape` invites. Deliberately not broadcast: filling a parameter with one
+        drawn number gives every unit the same weight, which is the failure a fan-scaled draw exists to
+        avoid, and it would pass silently."""
+
+        @initializer
+        def forgot_the_size(rng, shape):
+            return rng.normal(0.0, 1.0)
+
+        with pytest.raises(
+            ValueError, match=r"returned shape \(\) for a parameter of shape \(2, 2\)"
+        ):
+            forgot_the_size().sample((2, 2), "float64", np.random.default_rng(0))
+
+    @pytest.mark.parametrize(
+        "source, expected",
+        [
+            ("def sampler(rng, shape, *rest): ...", r"takes \*rest"),
+            ("def sampler(rng, shape, **rest): ...", r"takes \*\*rest"),
+        ],
+        ids=["var_positional", "var_keyword"],
+    )
+    def test_rejects_a_signature_it_cannot_record(self, source, expected):
+        """A var-arg has no name to store, so it cannot be recorded. Caught at decoration rather than at the
+        first draw."""
+        namespace: dict = {}
+        exec(source, namespace)
+
+        with pytest.raises(ValueError, match=expected):
+            initializer(namespace["sampler"])
+
+    @pytest.mark.parametrize(
+        "given, expected",
+        [({}, "missing parameters"), ({"std": 1.0}, "unexpected parameters")],
+        ids=["missing", "unexpected"],
+    )
+    def test_rejects_the_wrong_parameters_at_construction(self, given, expected):
+        @initializer
+        def scaled(rng, shape, factor):
+            return np.full(shape, factor)
+
+        with pytest.raises(TypeError, match=expected):
+            scaled(**given)
