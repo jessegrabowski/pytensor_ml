@@ -4,7 +4,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pytensor_ml.activations import Activation, ReLU, Tanh
-from pytensor_ml.layers import RNN, Input, Linear
+from pytensor_ml.layers import RNN, ElmanCell, Input, Linear, Recurrent, RecurrentCell
 from pytensor_ml.loss import SquaredError
 from pytensor_ml.model import Model
 from pytensor_ml.optim import adam
@@ -35,12 +35,12 @@ def unrolled(X_np, W_ih, b, W_hh, phi, h0=None):
 
 def draw_parameters(layer, rng):
     """Set every parameter to a fresh draw and hand the values back for the reference to use."""
-    W_ih = rng.normal(size=(layer.n_in, layer.n_hidden)).astype(floatX)
-    b = rng.normal(size=(layer.n_hidden,)).astype(floatX)
-    W_hh = rng.normal(size=(layer.n_hidden, layer.n_hidden)).astype(floatX)
-    layer.W_ih.set_value(W_ih)
-    layer.b.set_value(b)
-    layer.W_hh.set_value(W_hh)
+    W_ih = rng.normal(size=(layer.cell.n_in, layer.cell.n_hidden)).astype(floatX)
+    b = rng.normal(size=(layer.cell.n_hidden,)).astype(floatX)
+    W_hh = rng.normal(size=(layer.cell.n_hidden, layer.cell.n_hidden)).astype(floatX)
+    layer.cell.W_ih.set_value(W_ih)
+    layer.cell.b.set_value(b)
+    layer.cell.W_hh.set_value(W_hh)
     return W_ih, b, W_hh
 
 
@@ -93,7 +93,7 @@ def test_the_recurrent_weight_first_acts_on_the_second_step(rng):
     X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
 
     first, second = (
-        pytensor.grad(out[..., step, :].sum(), layer.W_hh).eval({X: X_np}) for step in (0, 1)
+        pytensor.grad(out[..., step, :].sum(), layer.cell.W_hh).eval({X: X_np}) for step in (0, 1)
     )
 
     np.testing.assert_allclose(first, np.zeros((3, 3)), atol=ATOL)
@@ -108,9 +108,9 @@ def test_every_parameter_is_reachable_through_the_scan(rng):
     out = layer(X)
 
     assert set(collect_trainable_params(out)) == {
-        layer.W_ih,
-        layer.b,
-        layer.W_hh,
+        layer.cell.W_ih,
+        layer.cell.b,
+        layer.cell.W_hh,
     }
 
 
@@ -156,10 +156,10 @@ def test_the_recurrent_weight_is_drawn_orthogonal_by_default():
     spread alone would not notice it picking up the recurrent default."""
     layer = RNN("rnn", n_in=16, n_hidden=64)
 
-    W_hh = layer.W_hh.get_value()
+    W_hh = layer.cell.W_hh.get_value()
     np.testing.assert_allclose(W_hh.T @ W_hh, np.eye(64), atol=ATOL)
 
-    W_ih = layer.W_ih.get_value()
+    W_ih = layer.cell.W_ih.get_value()
     assert np.abs(W_ih @ W_ih.T - np.eye(16)).max() > 0.1
     assert W_ih.std() == pytest.approx(np.sqrt(2.0 / 80), rel=0.1)
 
@@ -176,14 +176,16 @@ def test_the_bias_is_optional(bias, rng):
     W_ih = rng.normal(size=(4, 3)).astype(floatX)
     W_hh = rng.normal(size=(3, 3)).astype(floatX)
     b = rng.normal(size=(3,)).astype(floatX) if bias else np.zeros(3, dtype=floatX)
-    layer.W_ih.set_value(W_ih)
-    layer.W_hh.set_value(W_hh)
+    layer.cell.W_ih.set_value(W_ih)
+    layer.cell.W_hh.set_value(W_hh)
     if bias:
-        layer.b.set_value(b)
+        layer.cell.b.set_value(b)
     X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
 
     assert set(collect_trainable_params(out)) == (
-        {layer.W_ih, layer.W_hh, layer.b} if bias else {layer.W_ih, layer.W_hh}
+        {layer.cell.W_ih, layer.cell.W_hh, layer.cell.b}
+        if bias
+        else {layer.cell.W_ih, layer.cell.W_hh}
     )
     np.testing.assert_allclose(
         out.eval({X: X_np}), unrolled(X_np, W_ih, b, W_hh, np.tanh), atol=ATOL
@@ -195,8 +197,8 @@ def test_the_recurrent_weight_takes_its_own_initializer():
     which shares the layer's other two."""
     layer = RNN("rnn", n_in=4, n_hidden=3, recurrent_initializer=ZeroInitializer())
 
-    np.testing.assert_array_equal(layer.W_hh.get_value(), np.zeros((3, 3)))
-    assert np.abs(layer.W_ih.get_value()).max() > 0.0
+    np.testing.assert_array_equal(layer.cell.W_hh.get_value(), np.zeros((3, 3)))
+    assert np.abs(layer.cell.W_ih.get_value()).max() > 0.0
 
 
 @pytest.mark.parametrize(
@@ -231,6 +233,102 @@ def test_the_state_takes_the_dtype_the_step_produces():
         assert out.eval({X: np.zeros((2, 5, 4), dtype="float64")}).dtype == np.dtype("float64")
 
 
+class TwoStateCell(RecurrentCell):
+    """A cell carrying more than one tensor, as an LSTM does. It sums the input into the first state and
+    counts steps in the second, so both have to survive the round trip to give the right answer."""
+
+    def __init__(self, n_hidden):
+        self.n_hidden = n_hidden
+
+    def step(self, x_t, running_sum, count):
+        return running_sum + x_t, count + 1.0
+
+    def initial_state(self, X):
+        zeros = pt.zeros((*X.shape[:-2], self.n_hidden), dtype=X.dtype)
+        return zeros, pt.zeros_like(zeros)
+
+
+def test_a_cell_may_carry_more_than_one_state(rng):
+    """Scan hands back a list once a cell carries several states rather than the bare variable it returns
+    for one, and only the first is the output. Taking the wrong one would return the step count."""
+    X = pt.tensor("X", shape=(None, None, 3))
+    out = Recurrent(TwoStateCell(3), name="two_state")(X)
+
+    X_np = rng.normal(size=(5, 7, 3)).astype(floatX)
+
+    np.testing.assert_allclose(out.eval({X: X_np}), np.cumsum(X_np, axis=-2), atol=ATOL)
+
+
+def test_a_cell_carrying_several_states_can_be_started_from_all_of_them(rng):
+    """Each state has to reach the step it belongs to. Threading them in the wrong order, or dropping all
+    but the first, would still run and still return something of the right shape."""
+    X = pt.tensor("X", shape=(None, None, 3))
+    start = pt.tensor("start", shape=(None, 3))
+    out = Recurrent(TwoStateCell(3), name="two_state")(X, [start, pt.zeros_like(start)])
+
+    X_np = rng.normal(size=(5, 7, 3)).astype(floatX)
+    start_np = rng.normal(size=(5, 3)).astype(floatX)
+
+    np.testing.assert_allclose(
+        out.eval({X: X_np, start: start_np}),
+        np.cumsum(X_np, axis=-2) + start_np[:, None, :],
+        atol=ATOL,
+    )
+
+
+def test_a_rejected_state_names_which_one_of_several_is_wrong():
+    """The message carries a position because a cell may carry many states, and a caller staring at two
+    identically shaped arguments needs to know which one is wrong. A hardcoded index would read as 0 here."""
+    X = pt.tensor("X", shape=(None, None, 3))
+    good, bad = pt.matrix("good"), pt.vector("bad")
+
+    with pytest.raises(ValueError, match="state at position 1; got a 1-dimensional one"):
+        Recurrent(TwoStateCell(3), name="two_state")(X, [good, bad])
+
+
+def test_rejects_a_starting_state_the_cell_does_not_carry():
+    """A cell's state count is part of its contract, and scan would otherwise report the mismatch from
+    inside the inner function, where the message names nothing the caller wrote."""
+    X = pt.tensor("X", shape=(None, None, 3))
+
+    with pytest.raises(ValueError, match="carries 2 state tensor\\(s\\), but got 1"):
+        Recurrent(TwoStateCell(3), name="two_state")(X, pt.matrix("only_one"))
+
+
+def test_the_rnn_is_a_recurrent_over_an_elman_cell():
+    """The flat constructor is a convenience over the same two pieces, so a caller who wants the cell on
+    its own gets exactly what the layer would have built."""
+    layer = RNN("rnn", n_in=4, n_hidden=3)
+
+    assert isinstance(layer, Recurrent)
+    assert isinstance(layer.cell, ElmanCell)
+    assert [p.name for p in (layer.cell.W_ih, layer.cell.b, layer.cell.W_hh)] == [
+        "rnn_W_ih",
+        "rnn_b",
+        "rnn_W_hh",
+    ]
+
+
+def test_a_hand_built_cell_scans_the_same_as_the_flat_constructor(rng):
+    """What the split is for: `Recurrent` takes any cell, and wrapping the same one the flat constructor
+    builds has to give the same graph back."""
+    X = pt.tensor("X", shape=(None, None, 4))
+    cell = ElmanCell("cell", n_in=4, n_hidden=3)
+    wrapped = Recurrent(cell, name="wrapped")(X)
+
+    W_ih = rng.normal(size=(4, 3)).astype(floatX)
+    b = rng.normal(size=(3,)).astype(floatX)
+    W_hh = rng.normal(size=(3, 3)).astype(floatX)
+    cell.W_ih.set_value(W_ih)
+    cell.b.set_value(b)
+    cell.W_hh.set_value(W_hh)
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+
+    np.testing.assert_allclose(
+        wrapped.eval({X: X_np}), unrolled(X_np, W_ih, b, W_hh, np.tanh), atol=ATOL
+    )
+
+
 def test_rejects_an_input_with_no_time_axis():
     layer = RNN("rnn", n_in=4, n_hidden=3)
 
@@ -243,5 +341,7 @@ def test_rejects_an_initial_state_that_does_not_match_the_batch_axes():
     otherwise broadcast a mismatched state into the recurrence and return a silently wrong shape."""
     layer = RNN("rnn", n_in=4, n_hidden=3)
 
-    with pytest.raises(ValueError, match="needs a 2-dimensional state; got a 1-dimensional one"):
+    with pytest.raises(
+        ValueError, match="needs a 2-dimensional state at position 0; got a 1-dimensional one"
+    ):
         layer(pt.tensor("X", shape=(None, None, 4)), pt.tensor("h0", shape=(3,)))

@@ -1,7 +1,11 @@
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+
 import numpy as np
 import pytensor.tensor as pt
 
 from pytensor.scan import scan
+from pytensor.tensor.variable import TensorVariable
 
 from pytensor_ml.activations import Activation, Tanh
 from pytensor_ml.base import Layer
@@ -14,12 +18,149 @@ from pytensor_ml.state import (
 )
 
 
-class RNN(Layer):
-    r"""
-    Elman recurrent layer over a sequence.
+class RecurrentCell(ABC):
+    """
+    One step of a recurrence, for :class:`Recurrent` to scan over a sequence.
 
-    Carry a hidden state along the time axis, updating it at each step from the step's input and the
-    previous state:
+    A cell owns the parameters its step uses and knows the shape of the state it carries, which is all
+    the loop needs from it. Subclasses implement :meth:`step` and :meth:`initial_state`.
+    """
+
+    @abstractmethod
+    def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
+        """
+        Advance the state by one timestep.
+
+        Parameters
+        ----------
+        x_t : TensorVariable
+            The sequence at this step, shape ``(..., n_in)``.
+        *state : TensorVariable
+            The state carried out of the previous step, as :meth:`initial_state` laid it out.
+
+        Returns
+        -------
+        tuple of TensorVariable
+            The new state, in the same order. Its first element is the cell's output, which is what
+            :class:`Recurrent` stacks over time -- an LSTM carrying :math:`(h, c)` returns :math:`h` first.
+        """
+
+    @abstractmethod
+    def initial_state(self, X: TensorVariable) -> tuple[TensorVariable, ...]:
+        """
+        Build the state the recurrence starts from, for a sequence ``X`` of shape ``(..., time, n_in)``.
+
+        Carries one value per batch element, so the state's batch axes are ``X``'s and its dtype is the
+        one :meth:`step` produces -- a float64 sequence through a float32 cell makes a float64 state.
+
+        Returns
+        -------
+        tuple of TensorVariable
+            Zero-filled state, in the order :meth:`step` takes and returns it.
+        """
+
+
+class Recurrent(Layer):
+    """
+    Scan a :class:`RecurrentCell` over the time axis of a sequence.
+
+    Time is the second-to-last axis and everything before it is a batch axis, so the input is
+    ``(..., time, n_in)`` and the output ``(..., time, n_out)``, one cell output per step. Slice the last
+    step off the result -- ``out[..., -1, :]`` -- for the sequence-classification case; pytensor's
+    ``scan_save_mem`` rewrite sees that the earlier steps are unused and stops storing them.
+
+    Parameters
+    ----------
+    cell : RecurrentCell
+        The step to run at each timestep.
+    name : str or None
+        Name for the layer's output and its scan. Defaults to "Recurrent" when None.
+    """
+
+    def __init__(self, cell: RecurrentCell, name: str | None = None):
+        self.cell = cell
+        self.name = name if name else "Recurrent"
+
+    def __call__(
+        self,
+        X: pt.TensorLike,
+        initial_state: pt.TensorLike | Sequence[TensorVariable] | None = None,
+    ) -> TensorVariable:
+        """
+        Run the cell over ``X`` and return its output at every step.
+
+        Parameters
+        ----------
+        X : TensorVariable
+            Input sequence, shape ``(..., time, n_in)``.
+        initial_state : TensorVariable or sequence of TensorVariable, optional
+            The state the recurrence starts from, matching what the cell carries. The cell's zero state
+            when omitted.
+
+        Returns
+        -------
+        TensorVariable
+            The cell's output at each step, shape ``(..., time, n_out)``.
+        """
+        X = pt.as_tensor(X)
+        if X.ndim < 2:
+            raise ValueError(
+                f"{self.name} takes a sequence of shape (..., time, n_in), but got a "
+                f"{X.ndim}-dimensional input, which has no time axis to recur over."
+            )
+
+        zero_state = self.cell.initial_state(X)
+        if initial_state is None:
+            state = zero_state
+        else:
+            if isinstance(initial_state, list | tuple):
+                state = tuple(pt.as_tensor(tensor) for tensor in initial_state)
+            else:
+                state = (pt.as_tensor(initial_state),)
+            self._check_state_against(state, zero_state, X)
+
+        # Scan iterates the leading axis, so time moves to the front and back again on the way out.
+        # Not strict: the step closes over the cell's parameters and scan lifts them in. A generator
+        # captured that way has no update, which `collect_default_updates` refuses.
+        state_sequence = scan(
+            self.cell.step,
+            sequences=[pt.moveaxis(X, -2, 0)],
+            outputs_info=list(state),
+            name=f"{self.name}_recurrence",
+            return_updates=False,
+        )
+
+        # Scan hands back a bare variable for a single carried state and a list for several. The cell's
+        # output is the first one either way.
+        output = state_sequence[0] if isinstance(state_sequence, list) else state_sequence
+
+        out = pt.moveaxis(output, 0, -2)
+        out.name = f"{self.name}_output"
+        return out
+
+    def _check_state_against(
+        self,
+        given: Sequence[TensorVariable],
+        expected: Sequence[TensorVariable],
+        X: TensorVariable,
+    ) -> None:
+        """Reject a starting state the cell would not have built, before scan reports it from inside."""
+        if len(given) != len(expected):
+            raise ValueError(
+                f"{self.name}'s cell carries {len(expected)} state tensor(s), but got {len(given)}."
+            )
+        for position, (state, zero) in enumerate(zip(given, expected)):
+            if state.ndim != zero.ndim:
+                raise ValueError(
+                    f"{self.name} starts from a state carrying the same batch axes as its input, so a "
+                    f"{X.ndim}-dimensional input needs a {zero.ndim}-dimensional state at position "
+                    f"{position}; got a {state.ndim}-dimensional one."
+                )
+
+
+class ElmanCell(RecurrentCell):
+    r"""
+    The step of an Elman recurrence, which updates its state from the step's input and the previous state:
 
     .. math::
 
@@ -27,15 +168,10 @@ class RNN(Layer):
 
     where :math:`\phi` is the activation.
 
-    Time is the second-to-last axis and everything before it is a batch axis, so the input is
-    ``(..., time, n_in)`` and the output ``(..., time, n_hidden)``, one hidden state per step. Slice the
-    last step off the result -- ``out[..., -1, :]`` -- for the sequence-classification case; pytensor's
-    ``scan_save_mem`` rewrite sees that the earlier steps are unused and stops storing them.
-
     Parameters
     ----------
     name : str or None
-        Name prefix for the layer's parameters. Defaults to "RNN" when None.
+        Name prefix for the cell's parameters. Defaults to "ElmanCell" when None.
     n_in : int
         Size of the input feature axis.
     n_hidden : int
@@ -69,7 +205,7 @@ class RNN(Layer):
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
     ):
-        self.name = name if name else "RNN"
+        self.name = name if name else "ElmanCell"
         self.n_in = n_in
         self.n_hidden = n_hidden
         self.activation = activation if activation is not None else Tanh()
@@ -103,68 +239,73 @@ class RNN(Layer):
             initializer=W_hh_initializer,
         )
 
-    def __call__(
-        self, X: pt.TensorLike, initial_state: pt.TensorLike | None = None
-    ) -> pt.TensorVariable:
-        """
-        Run the recurrence over ``X`` and return every hidden state.
+    def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
+        (h_prev,) = state
+        pre_activation = x_t @ self.W_ih + h_prev @ self.W_hh
+        if self.bias:
+            pre_activation = pre_activation + self.b
+        return (self.activation(pre_activation),)
 
-        Parameters
-        ----------
-        X : TensorVariable
-            Input sequence, shape ``(..., time, n_in)``.
-        initial_state : TensorVariable, optional
-            The state the recurrence starts from, shape ``(..., n_hidden)``, over the same batch axes.
-            Zeros when omitted.
+    def initial_state(self, X: TensorVariable) -> tuple[TensorVariable, ...]:
+        state_dtype = np.result_type(X.dtype, self.W_ih.dtype, self.W_hh.dtype)
+        return (pt.zeros((*X.shape[:-2], self.n_hidden), dtype=state_dtype),)
 
-        Returns
-        -------
-        TensorVariable
-            Hidden states, shape ``(..., time, n_hidden)``.
-        """
-        X = pt.as_tensor(X)
-        if X.ndim < 2:
-            raise ValueError(
-                f"{self.name} takes a sequence of shape (..., time, {self.n_in}), but got a "
-                f"{X.ndim}-dimensional input, which has no time axis to recur over."
-            )
 
-        # Scan iterates the leading axis, so time moves to the front and back again on the way out.
-        sequence = pt.moveaxis(X, -2, 0)
+class RNN(Recurrent):
+    r"""
+    Elman recurrent layer over a sequence: a :class:`Recurrent` scanning an :class:`ElmanCell`.
 
-        if initial_state is None:
-            # The state carries whatever the step produces, which promotes the input against the
-            # parameters: a float64 sequence through a float32 network makes a float64 state.
-            state_dtype = np.result_type(X.dtype, self.W_ih.dtype, self.W_hh.dtype)
-            initial_state = pt.zeros((*X.shape[:-2], self.n_hidden), dtype=state_dtype)
-        else:
-            initial_state = pt.as_tensor(initial_state)
-            if initial_state.ndim != X.ndim - 1:
-                raise ValueError(
-                    f"{self.name} starts from a state of shape (..., {self.n_hidden}), carrying the same "
-                    f"batch axes as its input, so a {X.ndim}-dimensional input needs a "
-                    f"{X.ndim - 1}-dimensional state; got a {initial_state.ndim}-dimensional one."
-                )
+    Takes the cell's arguments directly, for the common case where a network wants a plain recurrence
+    and no cell of its own. The parameters live on the cell, as ``rnn.cell.W_ih``. See
+    :class:`ElmanCell` for the recurrence itself and :class:`Recurrent` for the axes.
 
-        def step(x_t, h_prev):
-            pre_activation = x_t @ self.W_ih + h_prev @ self.W_hh
-            if self.bias:
-                pre_activation = pre_activation + self.b
-            return self.activation(pre_activation)
+    Parameters
+    ----------
+    name : str or None
+        Name prefix for the layer's parameters. Defaults to "RNN" when None.
+    n_in : int
+        Size of the input feature axis.
+    n_hidden : int
+        Size of the hidden state.
+    activation : Activation, optional
+        Applied to each step's pre-activation. Default is :class:`~pytensor_ml.activations.Tanh`.
+    bias : bool, optional
+        Add the learned shift :math:`b`. Default is True.
+    weight_initializer : Initializer, optional
+        How :math:`W_{ih}` is drawn. Xavier normal when omitted.
+    recurrent_initializer : Initializer, optional
+        How :math:`W_{hh}` is drawn. Orthogonal when omitted; see :class:`ElmanCell` for why that is the
+        draw an RNN is most sensitive to.
+    bias_initializer : Initializer, optional
+        How :math:`b` is drawn. Zeros when omitted.
+    """
 
-        # Not strict: the step closes over the layer's parameters and the activation's, and scan lifts
-        # them in. A generator captured that way has no update, which `collect_default_updates` refuses.
-        hidden = scan(
-            step,
-            sequences=[sequence],
-            outputs_info=[initial_state],
-            name=f"{self.name}_recurrence",
-            return_updates=False,
+    def __init__(
+        self,
+        name: str | None,
+        n_in: int,
+        n_hidden: int,
+        activation: Activation | None = None,
+        bias: bool = True,
+        *,
+        weight_initializer: Initializer | None = None,
+        recurrent_initializer: Initializer | None = None,
+        bias_initializer: Initializer | None = None,
+    ):
+        name = name if name else "RNN"
+        super().__init__(
+            ElmanCell(
+                name,
+                n_in,
+                n_hidden,
+                activation,
+                bias,
+                weight_initializer=weight_initializer,
+                recurrent_initializer=recurrent_initializer,
+                bias_initializer=bias_initializer,
+            ),
+            name=name,
         )
 
-        out = pt.moveaxis(hidden, 0, -2)
-        out.name = f"{self.name}_output"
-        return out
 
-
-__all__ = ["RNN"]
+__all__ = ["RNN", "ElmanCell", "Recurrent", "RecurrentCell"]
