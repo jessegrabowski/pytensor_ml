@@ -19,9 +19,11 @@ from pytensor_ml.layers.norm import (
     NoRunningStatsBatchNormLayer,
     PredictionBatchNormLayer,
 )
+from pytensor_ml.layers.recurrent import RNN
 from pytensor_ml.layers.transformer import FeedForward, TransformerBlock
 
 __all__ = [
+    "RNN",
     "BatchNorm2D",
     "CausalSelfAttention",
     "Concatenate",
