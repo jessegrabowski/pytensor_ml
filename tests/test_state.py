@@ -13,6 +13,7 @@ from pytensor_ml.state import (
     Initializer,
     NormalInitializer,
     OneInitializer,
+    OrthogonalInitializer,
     UnitUniformInitializer,
     XavierNormalInitializer,
     XavierUniformInitializer,
@@ -227,6 +228,47 @@ def test_a_normal_initializer_built_from_its_registry_name_has_a_usable_default_
     value = _INITIALIZERS["normal"]().sample((100, 100), "float64", np.random.default_rng(0))
 
     assert value.std() == pytest.approx(0.01, rel=0.05)
+
+
+@pytest.mark.parametrize("shape", [(5, 5), (7, 3), (3, 7)], ids=["square", "tall", "wide"])
+def test_an_orthogonal_draw_preserves_the_norm_it_can(shape):
+    """Whichever of the two products is the identity, the map leaves a vector's norm alone, which is the
+    whole reason a recurrence draws from here. Only the smaller side can be orthonormal on a rectangle."""
+    value = OrthogonalInitializer().sample(shape, "float64", np.random.default_rng(0))
+    n_rows, n_cols = shape
+    product = value @ value.T if n_rows < n_cols else value.T @ value
+
+    assert value.shape == shape
+    np.testing.assert_allclose(product, np.eye(min(shape)), atol=1e-10)
+
+
+def test_an_orthogonal_gain_sets_the_norm_the_map_scales_by():
+    """The singular values are the factors the map stretches by, and they are all `gain`. Asserting them
+    rather than the entries says the scaling left the matrix orthogonal instead of merely larger."""
+    value = OrthogonalInitializer(gain=2.0).sample((4, 4), "float64", np.random.default_rng(1))
+
+    np.testing.assert_allclose(np.linalg.svd(value, compute_uv=False), 2.0, atol=1e-10)
+
+
+def test_an_orthogonal_draw_is_not_biased_toward_the_identity():
+    """A QR fixes Q only up to the signs of R's diagonal, and the ones LAPACK returns lean positive: taking
+    Q as it comes gives a mean diagonal around -0.2 rather than 0, a draw quietly pulled off the group's
+    center. Nothing about a single draw's orthogonality would reveal it."""
+    rng = np.random.default_rng(0)
+    diagonals = [
+        np.diag(OrthogonalInitializer().sample((4, 4), "float64", rng)).mean() for _ in range(2000)
+    ]
+
+    assert np.mean(diagonals) == pytest.approx(0.0, abs=0.02)
+
+
+@pytest.mark.parametrize("shape", [(5,), (4, 4, 4)], ids=["bias", "conv_kernel"])
+def test_an_orthogonal_draw_refuses_a_parameter_that_is_not_a_matrix(shape):
+    """Every other rank needs a flattening convention to be orthogonal at all, and the frameworks disagree
+    about which one. Raising beats picking one silently on the caller's behalf. The 1-D case is the one a
+    caller actually hits, by handing the layer's own default to a bias."""
+    with pytest.raises(ValueError, match="needs a matrix"):
+        OrthogonalInitializer().sample(shape, "float64", np.random.default_rng(0))
 
 
 def test_initial_value_draws_at_floatx_in_the_requested_shape():

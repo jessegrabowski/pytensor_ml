@@ -15,7 +15,7 @@ from pytensor_ml.pytensorf import RandomSeed
 RandomState = RandomSeed | np.random.RandomState | np.random.Generator
 
 InitializationScheme = Literal[
-    "zeros", "ones", "xavier_uniform", "xavier_normal", "unit_uniform", "normal"
+    "zeros", "ones", "xavier_uniform", "xavier_normal", "unit_uniform", "normal", "orthogonal"
 ]
 
 
@@ -177,6 +177,50 @@ class XavierNormalInitializer(Initializer):
         return rng.normal(0, scale, size=shape).astype(dtype)
 
 
+class OrthogonalInitializer(Initializer):
+    r"""
+    Draw a matrix whose rows or columns are orthonormal, whichever the shape admits, scaled by ``gain``.
+
+    An orthogonal map leaves the norm of whatever it multiplies unchanged, so applying one repeatedly
+    neither grows nor shrinks a vector. The draw is a QR decomposition of a Gaussian matrix, which is
+    uniform over the orthogonal group once the sign ambiguity is resolved.
+
+    Parameters
+    ----------
+    gain : float
+        Multiplier on the orthogonal matrix, setting the norm the map scales by. Default 1.0, which
+        preserves it.
+
+    References
+    ----------
+    .. [1] Saxe, A. M., McClelland, J. L., and Ganguli, S. (2014). Exact solutions to the nonlinear
+           dynamics of learning in deep linear neural networks. Proceedings of ICLR.
+    """
+
+    __props__ = ("gain",)
+
+    def __init__(self, gain: float = 1.0):
+        self.gain = gain
+
+    def sample(self, shape: tuple[int, ...], dtype: str, rng: np.random.Generator) -> np.ndarray:
+        if len(shape) != 2:
+            raise ValueError(
+                f"An orthogonal draw needs a matrix, but got a parameter of shape {shape}. "
+                "Orthogonality is a property of a two-dimensional map; give a parameter of any other "
+                "rank an initializer of its own."
+            )
+
+        # A reduced QR gives a Q of (rows, min(rows, cols)), so a wide matrix is drawn and decomposed
+        # transposed, leaving orthonormal rows where orthonormal columns will not fit.
+        n_rows, n_cols = shape
+        transposed = n_rows < n_cols
+        q, r = np.linalg.qr(rng.normal(size=(n_cols, n_rows) if transposed else shape))
+        # QR pins Q only up to the signs of R's diagonal, and the ones LAPACK happens to return are not
+        # uniform over the group. Folding them into Q is what makes the draw unbiased.
+        q = q * np.sign(np.diag(r))
+        return (self.gain * (q.T if transposed else q)).astype(dtype)
+
+
 # Every sampler is handed these two, in this order, before its own parameters.
 _DRAW_ARGUMENTS = ("rng", "shape")
 
@@ -336,6 +380,7 @@ _INITIALIZERS: dict[str, type[Initializer]] = {
     "xavier_normal": XavierNormalInitializer,
     "unit_uniform": UnitUniformInitializer,
     "normal": NormalInitializer,
+    "orthogonal": OrthogonalInitializer,
 }
 
 
