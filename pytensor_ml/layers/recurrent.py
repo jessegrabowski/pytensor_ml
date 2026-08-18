@@ -75,16 +75,23 @@ class Recurrent(Layer):
         The step to run at each timestep.
     name : str or None
         Name for the layer's output and its scan. Defaults to "Recurrent" when None.
+    reverse : bool, optional
+        Run the sequence from its last step to its first. The output stays aligned with the input, so
+        ``out[..., t, :]`` is the step that read ``X[..., t, :]`` either way, and a backward layer's
+        output concatenates elementwise with a forward one's. Default is False.
     """
 
-    def __init__(self, cell: RecurrentCell, name: str | None = None):
+    def __init__(self, cell: RecurrentCell, name: str | None = None, reverse: bool = False):
         self.cell = cell
         self.name = name if name else "Recurrent"
+        self.reverse = reverse
 
     def __call__(
         self,
         X: pt.TensorLike,
         initial_state: pt.TensorLike | Sequence[TensorVariable] | None = None,
+        *,
+        reverse: bool | None = None,
     ) -> TensorVariable:
         """
         Run the cell over ``X`` and return its output at every step.
@@ -96,12 +103,16 @@ class Recurrent(Layer):
         initial_state : TensorVariable or sequence of TensorVariable, optional
             The state the recurrence starts from, matching what the cell carries. The cell's zero state
             when omitted.
+        reverse : bool, optional
+            Direction for this call, in place of the layer's own. The layer's when omitted.
 
         Returns
         -------
         TensorVariable
             The cell's output at each step, shape ``(..., time, n_out)``.
         """
+        reverse = self.reverse if reverse is None else reverse
+
         X = pt.as_tensor(X)
         if X.ndim < 2:
             raise ValueError(
@@ -127,12 +138,17 @@ class Recurrent(Layer):
             sequences=[pt.moveaxis(X, -2, 0)],
             outputs_info=list(state),
             name=f"{self.name}_recurrence",
+            go_backwards=reverse,
             return_updates=False,
         )
 
         # Scan hands back a bare variable for a single carried state and a list for several. The cell's
         # output is the first one either way.
         output = state_sequence[0] if isinstance(state_sequence, list) else state_sequence
+
+        # Scan stacks in the order it iterated, so a backward pass comes out last step first.
+        if reverse:
+            output = output[::-1]
 
         out = pt.moveaxis(output, 0, -2)
         out.name = f"{self.name}_output"
@@ -213,30 +229,18 @@ class ElmanCell(RecurrentCell):
 
         # Held directly rather than as a nested Linear: the projection runs inside the recurrence, and a
         # layer op there would bury its matmul in an inner graph where the scan rewrites cannot see it.
-        W_ih_initializer = (
-            XavierNormalInitializer() if weight_initializer is None else weight_initializer
+        self.W_ih = _trainable_parameter(
+            f"{self.name}_W_ih", (n_in, n_hidden), weight_initializer, XavierNormalInitializer()
         )
-        self.W_ih = trainable(
-            W_ih_initializer.initial_value((n_in, n_hidden)),
-            f"{self.name}_W_ih",
-            initializer=W_ih_initializer,
-        )
-
         if bias:
-            b_initializer = ZeroInitializer() if bias_initializer is None else bias_initializer
-            self.b = trainable(
-                b_initializer.initial_value((n_hidden,)),
-                f"{self.name}_b",
-                initializer=b_initializer,
+            self.b = _trainable_parameter(
+                f"{self.name}_b", (n_hidden,), bias_initializer, ZeroInitializer()
             )
-
-        W_hh_initializer = (
-            OrthogonalInitializer() if recurrent_initializer is None else recurrent_initializer
-        )
-        self.W_hh = trainable(
-            W_hh_initializer.initial_value((n_hidden, n_hidden)),
+        self.W_hh = _trainable_parameter(
             f"{self.name}_W_hh",
-            initializer=W_hh_initializer,
+            (n_hidden, n_hidden),
+            recurrent_initializer,
+            OrthogonalInitializer(),
         )
 
     def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
@@ -277,6 +281,8 @@ class RNN(Recurrent):
         draw an RNN is most sensitive to.
     bias_initializer : Initializer, optional
         How :math:`b` is drawn. Zeros when omitted.
+    reverse : bool, optional
+        Run the sequence backward, with the output still aligned to the input. Default is False.
     """
 
     def __init__(
@@ -290,6 +296,7 @@ class RNN(Recurrent):
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
+        reverse: bool = False,
     ):
         name = name if name else "RNN"
         super().__init__(
@@ -304,6 +311,7 @@ class RNN(Recurrent):
                 bias_initializer=bias_initializer,
             ),
             name=name,
+            reverse=reverse,
         )
 
 
@@ -355,6 +363,8 @@ class GRUCell(RecurrentCell):
         How :math:`b` and :math:`c` are drawn. Zeros when omitted.
     """
 
+    _n_gates = 3
+
     def __init__(
         self,
         name: str | None,
@@ -375,35 +385,24 @@ class GRUCell(RecurrentCell):
         self.gate_activation = gate_activation if gate_activation is not None else Sigmoid()
         self.bias = bias
 
-        W_ih_initializer = (
-            XavierNormalInitializer() if weight_initializer is None else weight_initializer
-        )
-        self.W_ih = trainable(
-            W_ih_initializer.initial_value((n_in, 3 * n_hidden)),
+        self.W_ih = _trainable_parameter(
             f"{self.name}_W_ih",
-            initializer=W_ih_initializer,
+            (n_in, self._n_gates * n_hidden),
+            weight_initializer,
+            XavierNormalInitializer(),
         )
-
-        W_hh_initializer = (
-            OrthogonalInitializer() if recurrent_initializer is None else recurrent_initializer
-        )
-        self.W_hh = trainable(
-            W_hh_initializer.initial_value((n_hidden, 3 * n_hidden)),
+        self.W_hh = _trainable_parameter(
             f"{self.name}_W_hh",
-            initializer=W_hh_initializer,
+            (n_hidden, self._n_gates * n_hidden),
+            recurrent_initializer,
+            OrthogonalInitializer(),
         )
-
         if bias:
-            b_initializer = ZeroInitializer() if bias_initializer is None else bias_initializer
-            self.b = trainable(
-                b_initializer.initial_value((3 * n_hidden,)),
-                f"{self.name}_b",
-                initializer=b_initializer,
+            self.b = _trainable_parameter(
+                f"{self.name}_b", (self._n_gates * n_hidden,), bias_initializer, ZeroInitializer()
             )
-            self.c = trainable(
-                b_initializer.initial_value((n_hidden,)),
-                f"{self.name}_c",
-                initializer=b_initializer,
+            self.c = _trainable_parameter(
+                f"{self.name}_c", (n_hidden,), bias_initializer, ZeroInitializer()
             )
 
     def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
@@ -414,8 +413,8 @@ class GRUCell(RecurrentCell):
             from_input = from_input + self.b
         from_state = h_prev @ self.W_hh
 
-        input_r, input_z, input_n = _split_gates(from_input, self.n_hidden)
-        state_r, state_z, state_n = _split_gates(from_state, self.n_hidden)
+        input_r, input_z, input_n = _split_gates(from_input, self.n_hidden, self._n_gates)
+        state_r, state_z, state_n = _split_gates(from_state, self.n_hidden, self._n_gates)
         if self.bias:
             state_n = state_n + self.c
 
@@ -459,6 +458,8 @@ class GRU(Recurrent):
         How :math:`W_{hh}` is drawn. Orthogonal when omitted.
     bias_initializer : Initializer, optional
         How the biases are drawn. Zeros when omitted.
+    reverse : bool, optional
+        Run the sequence backward, with the output still aligned to the input. Default is False.
     """
 
     def __init__(
@@ -473,6 +474,7 @@ class GRU(Recurrent):
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
+        reverse: bool = False,
     ):
         name = name if name else "GRU"
         super().__init__(
@@ -488,7 +490,251 @@ class GRU(Recurrent):
                 bias_initializer=bias_initializer,
             ),
             name=name,
+            reverse=reverse,
         )
+
+
+class LSTMCell(RecurrentCell):
+    r"""
+    The step of a long short-term memory cell, which carries a memory alongside its output:
+
+    .. math::
+
+        i_t &= \sigma\left(x_t W_{ii} + b_i + h_{t-1} W_{hi}\right) \\
+        f_t &= \sigma\left(x_t W_{if} + b_f + h_{t-1} W_{hf}\right) \\
+        g_t &= \phi\left(x_t W_{ig} + b_g + h_{t-1} W_{hg}\right) \\
+        o_t &= \sigma\left(x_t W_{io} + b_o + h_{t-1} W_{ho}\right) \\
+        c_t &= f_t \odot c_{t-1} + i_t \odot g_t \\
+        h_t &= o_t \odot \phi(c_t),
+
+    where :math:`\phi` is the activation and :math:`\sigma` the gate activation. The memory
+    :math:`c` runs through the sequence touched only by two elementwise gates, so the gradient reaches
+    the start of it without passing through a weight; the forget gate :math:`f` decides what the memory
+    keeps, the input gate :math:`i` what the candidate :math:`g` adds to it, and the output gate
+    :math:`o` how much of it the step exposes as :math:`h`.
+
+    The four gates share one projection of the input and one of the state, so a step is two matmuls
+    rather than eight. Every gate sees the two projections only as a sum, so a single bias covers both,
+    which is the layout flax uses and half of torch's.
+
+    Parameters
+    ----------
+    name : str or None
+        Name prefix for the cell's parameters. Defaults to "LSTMCell" when None.
+    n_in : int
+        Size of the input feature axis.
+    n_hidden : int
+        Size of the hidden state, and of the memory it carries alongside.
+    activation : Activation, optional
+        Applied to the candidate and again to the memory on the way out, as in torch, flax and keras.
+        Default is :class:`~pytensor_ml.activations.Tanh`, which bounds the memory the output gate
+        reads however far the unbounded :math:`c` has drifted.
+    gate_activation : Activation, optional
+        Applied to the input, forget and output gates. Only a squashing function makes them gates; the
+        forget gate ranging outside :math:`[0, 1]` grows or flips the memory it is meant to decay.
+        Default is :class:`~pytensor_ml.activations.Sigmoid`.
+    bias : bool, optional
+        Add the learned shift :math:`b`, one slice per gate. Default is True.
+    weight_initializer : Initializer, optional
+        How :math:`W_{ih}` is drawn. Xavier normal when omitted.
+    recurrent_initializer : Initializer, optional
+        How :math:`W_{hh}` is drawn, across all four gates at once. Orthogonal when omitted; see
+        :class:`ElmanCell` for why the state's own weight is the sensitive draw.
+    bias_initializer : Initializer, optional
+        How :math:`b` is drawn. Zeros when omitted, as in torch and flax. Drawing the forget slice at
+        one instead starts the memory holding rather than decaying, which is keras' default.
+    """
+
+    _n_gates = 4
+
+    def __init__(
+        self,
+        name: str | None,
+        n_in: int,
+        n_hidden: int,
+        activation: Activation | None = None,
+        bias: bool = True,
+        *,
+        gate_activation: Activation | None = None,
+        weight_initializer: Initializer | None = None,
+        recurrent_initializer: Initializer | None = None,
+        bias_initializer: Initializer | None = None,
+    ):
+        self.name = name if name else "LSTMCell"
+        self.n_in = n_in
+        self.n_hidden = n_hidden
+        self.activation = activation if activation is not None else Tanh()
+        self.gate_activation = gate_activation if gate_activation is not None else Sigmoid()
+        self.bias = bias
+
+        self.W_ih = _trainable_parameter(
+            f"{self.name}_W_ih",
+            (n_in, self._n_gates * n_hidden),
+            weight_initializer,
+            XavierNormalInitializer(),
+        )
+        self.W_hh = _trainable_parameter(
+            f"{self.name}_W_hh",
+            (n_hidden, self._n_gates * n_hidden),
+            recurrent_initializer,
+            OrthogonalInitializer(),
+        )
+        if bias:
+            self.b = _trainable_parameter(
+                f"{self.name}_b", (self._n_gates * n_hidden,), bias_initializer, ZeroInitializer()
+            )
+
+    def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
+        h_prev, c_prev = state
+
+        projected = x_t @ self.W_ih + h_prev @ self.W_hh
+        if self.bias:
+            projected = projected + self.b
+        pre_in, pre_forget, pre_candidate, pre_out = _split_gates(
+            projected, self.n_hidden, self._n_gates
+        )
+
+        input_gate = self.gate_activation(pre_in)
+        forget_gate = self.gate_activation(pre_forget)
+        output_gate = self.gate_activation(pre_out)
+        candidate = self.activation(pre_candidate)
+
+        memory = forget_gate * c_prev + input_gate * candidate
+        return (output_gate * self.activation(memory), memory)
+
+    def initial_state(self, X: TensorVariable) -> tuple[TensorVariable, ...]:
+        # One variable in both slots: scan gives every carried state its own inner input regardless.
+        zeros = _zero_state(X, self.n_hidden, self.W_ih, self.W_hh)
+        return (zeros, zeros)
+
+
+class LSTM(Recurrent):
+    r"""
+    Long short-term memory layer over a sequence: a :class:`Recurrent` scanning an :class:`LSTMCell`.
+
+    Takes the cell's arguments directly, for the common case where a network wants a plain recurrence
+    and no cell of its own. The parameters live on the cell, as ``lstm.cell.W_ih``. See
+    :class:`LSTMCell` for the recurrence itself and :class:`Recurrent` for the axes. The layer returns
+    :math:`h` at every step; the memory :math:`c` stays inside the loop.
+
+    Parameters
+    ----------
+    name : str or None
+        Name prefix for the layer's parameters. Defaults to "LSTM" when None.
+    n_in : int
+        Size of the input feature axis.
+    n_hidden : int
+        Size of the hidden state, and of the memory it carries alongside.
+    activation : Activation, optional
+        Applied to the candidate and to the memory on the way out. Default is
+        :class:`~pytensor_ml.activations.Tanh`.
+    gate_activation : Activation, optional
+        Applied to the input, forget and output gates. Default is
+        :class:`~pytensor_ml.activations.Sigmoid`.
+    bias : bool, optional
+        Add the learned shift. Default is True.
+    weight_initializer : Initializer, optional
+        How :math:`W_{ih}` is drawn. Xavier normal when omitted.
+    recurrent_initializer : Initializer, optional
+        How :math:`W_{hh}` is drawn. Orthogonal when omitted.
+    bias_initializer : Initializer, optional
+        How :math:`b` is drawn. Zeros when omitted.
+    reverse : bool, optional
+        Run the sequence backward, with the output still aligned to the input. Default is False.
+    """
+
+    def __init__(
+        self,
+        name: str | None,
+        n_in: int,
+        n_hidden: int,
+        activation: Activation | None = None,
+        bias: bool = True,
+        *,
+        gate_activation: Activation | None = None,
+        weight_initializer: Initializer | None = None,
+        recurrent_initializer: Initializer | None = None,
+        bias_initializer: Initializer | None = None,
+        reverse: bool = False,
+    ):
+        name = name if name else "LSTM"
+        super().__init__(
+            LSTMCell(
+                name,
+                n_in,
+                n_hidden,
+                activation,
+                bias,
+                gate_activation=gate_activation,
+                weight_initializer=weight_initializer,
+                recurrent_initializer=recurrent_initializer,
+                bias_initializer=bias_initializer,
+            ),
+            name=name,
+            reverse=reverse,
+        )
+
+
+class Bidirectional(Layer):
+    """
+    Read a sequence in both directions and concatenate what each pass saw.
+
+    A forward layer's output at step ``t`` summarizes everything up to ``t``, and a backward layer's
+    summarizes everything from ``t`` on, so the two together give each step the whole sequence. Both
+    outputs stay aligned to the input's time axis, so the concatenation joins the two views of the same
+    step; the result is ``(..., time, n_forward + n_backward)``.
+
+    The two layers are separate objects with separate parameters, which is what lets each direction
+    learn its own recurrence. Their direction is this wrapper's to choose: whatever ``reverse`` they
+    carry is ignored here, and neither layer is changed by being wrapped.
+
+    Parameters
+    ----------
+    forward : Recurrent
+        Run over the sequence as given.
+    backward : Recurrent
+        Run over the sequence from its last step to its first.
+    name : str or None
+        Name for the layer's output. Defaults to "Bidirectional" when None.
+    """
+
+    def __init__(self, forward: Recurrent, backward: Recurrent, name: str | None = None):
+        if forward is backward:
+            raise ValueError(
+                "Bidirectional needs two layers so each direction has its own parameters to learn its "
+                "own recurrence. Build a second one, with its own name."
+            )
+        self.forward = forward
+        self.backward = backward
+        self.name = name if name else "Bidirectional"
+
+    def __call__(self, X: pt.TensorLike) -> TensorVariable:
+        """
+        Run both directions over ``X`` and concatenate them on the feature axis.
+
+        Parameters
+        ----------
+        X : TensorVariable
+            Input sequence, shape ``(..., time, n_in)``.
+
+        Returns
+        -------
+        TensorVariable
+            Both directions' outputs, shape ``(..., time, n_forward + n_backward)``.
+        """
+        out = pt.concatenate(
+            [self.forward(X, reverse=False), self.backward(X, reverse=True)], axis=-1
+        )
+        out.name = f"{self.name}_output"
+        return out
+
+
+def _trainable_parameter(
+    name: str, shape: tuple[int, ...], initializer: Initializer | None, default: Initializer
+) -> TensorVariable:
+    """Build a trainable parameter of ``shape``, drawn by ``initializer``, or by ``default`` if None."""
+    chosen = default if initializer is None else initializer
+    return trainable(chosen.initial_value(shape), name, initializer=chosen)
 
 
 def _zero_state(X: TensorVariable, n_hidden: int, *parameters: TensorVariable) -> TensorVariable:
@@ -497,14 +743,21 @@ def _zero_state(X: TensorVariable, n_hidden: int, *parameters: TensorVariable) -
     return pt.zeros((*X.shape[:-2], n_hidden), dtype=state_dtype)
 
 
-def _split_gates(
-    projection: TensorVariable, n_hidden: int
-) -> tuple[TensorVariable, TensorVariable, TensorVariable]:
-    """Cut a stacked projection into its reset, update and candidate parts, in torch's gate order."""
-    # Split rather than three slices: its gradient is one Join, where three slices would each
+def _split_gates(projection: TensorVariable, n_hidden: int, n_gates: int) -> list[TensorVariable]:
+    """Cut a stacked projection into one part per gate, in torch's gate order."""
+    # Split rather than a slice per gate: its gradient is one Join, where the slices would each
     # accumulate into a zero buffer.
-    reset, update, candidate = pt.split(projection, [n_hidden] * 3, n_splits=3, axis=-1)
-    return reset, update, candidate
+    return pt.split(projection, [n_hidden] * n_gates, n_splits=n_gates, axis=-1)
 
 
-__all__ = ["GRU", "RNN", "ElmanCell", "GRUCell", "Recurrent", "RecurrentCell"]
+__all__ = [
+    "GRU",
+    "LSTM",
+    "RNN",
+    "Bidirectional",
+    "ElmanCell",
+    "GRUCell",
+    "LSTMCell",
+    "Recurrent",
+    "RecurrentCell",
+]

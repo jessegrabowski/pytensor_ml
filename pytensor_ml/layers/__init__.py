@@ -19,13 +19,25 @@ from pytensor_ml.layers.norm import (
     NoRunningStatsBatchNormLayer,
     PredictionBatchNormLayer,
 )
-from pytensor_ml.layers.recurrent import GRU, RNN, ElmanCell, GRUCell, Recurrent, RecurrentCell
+from pytensor_ml.layers.recurrent import (
+    GRU,
+    LSTM,
+    RNN,
+    Bidirectional,
+    ElmanCell,
+    GRUCell,
+    LSTMCell,
+    Recurrent,
+    RecurrentCell,
+)
 from pytensor_ml.layers.transformer import FeedForward, TransformerBlock
 
 __all__ = [
     "GRU",
+    "LSTM",
     "RNN",
     "BatchNorm2D",
+    "Bidirectional",
     "CausalSelfAttention",
     "Concatenate",
     "Dropout",
@@ -34,6 +46,7 @@ __all__ = [
     "FeedForward",
     "GRUCell",
     "Input",
+    "LSTMCell",
     "Layer",
     "LayerNorm",
     "Linear",
