@@ -7,7 +7,7 @@ import pytensor.tensor as pt
 from pytensor.scan import scan
 from pytensor.tensor.variable import TensorVariable
 
-from pytensor_ml.activations import Activation, Tanh
+from pytensor_ml.activations import Activation, Sigmoid, Tanh
 from pytensor_ml.base import Layer
 from pytensor_ml.params import trainable
 from pytensor_ml.state import (
@@ -247,8 +247,7 @@ class ElmanCell(RecurrentCell):
         return (self.activation(pre_activation),)
 
     def initial_state(self, X: TensorVariable) -> tuple[TensorVariable, ...]:
-        state_dtype = np.result_type(X.dtype, self.W_ih.dtype, self.W_hh.dtype)
-        return (pt.zeros((*X.shape[:-2], self.n_hidden), dtype=state_dtype),)
+        return (_zero_state(X, self.n_hidden, self.W_ih, self.W_hh),)
 
 
 class RNN(Recurrent):
@@ -308,4 +307,204 @@ class RNN(Recurrent):
         )
 
 
-__all__ = ["RNN", "ElmanCell", "Recurrent", "RecurrentCell"]
+class GRUCell(RecurrentCell):
+    r"""
+    The step of a gated recurrent unit, which interpolates between the previous state and a candidate:
+
+    .. math::
+
+        r_t &= \sigma\left(x_t W_{ir} + b_r + h_{t-1} W_{hr}\right) \\
+        z_t &= \sigma\left(x_t W_{iz} + b_z + h_{t-1} W_{hz}\right) \\
+        n_t &= \phi\left(x_t W_{in} + b_n + r_t \odot \left(h_{t-1} W_{hn} + c\right)\right) \\
+        h_t &= (1 - z_t) \odot n_t + z_t \odot h_{t-1},
+
+    where :math:`\phi` is the activation and :math:`\sigma` the gate activation. The update gate
+    :math:`z` decides how much of the previous state survives the step, so a unit holding :math:`z` near
+    one carries its value across the whole sequence and the gradient reaches the start of it; the reset
+    gate :math:`r` decides how much of that state the candidate is allowed to see.
+
+    The three gates share one projection of the input and one of the state, so a step is two matmuls
+    rather than six. :math:`r` multiplies the state's projection after that matmul rather than before
+    it -- as torch, flax and keras' ``reset_after`` all do -- which is what allows the fused form.
+
+    Parameters
+    ----------
+    name : str or None
+        Name prefix for the cell's parameters. Defaults to "GRUCell" when None.
+    n_in : int
+        Size of the input feature axis.
+    n_hidden : int
+        Size of the hidden state.
+    activation : Activation, optional
+        Applied to the candidate state. Default is :class:`~pytensor_ml.activations.Tanh`.
+    gate_activation : Activation, optional
+        Applied to the reset and update gates. Only a squashing function makes :math:`h_t` an
+        interpolation; a gate ranging outside :math:`[0, 1]` extrapolates past both the previous state
+        and the candidate. Default is :class:`~pytensor_ml.activations.Sigmoid`.
+    bias : bool, optional
+        Add the learned shifts :math:`b` and :math:`c`. One bias per gate covers the input and state
+        projections together, rather than torch's separate pair, whose sum is the only thing a gate can
+        distinguish. The candidate's state projection is the exception and carries its own :math:`c`:
+        :math:`r_t` scales it, so it moves independently of :math:`b_n`. Default is True.
+    weight_initializer : Initializer, optional
+        How :math:`W_{ih}` is drawn. Xavier normal when omitted.
+    recurrent_initializer : Initializer, optional
+        How :math:`W_{hh}` is drawn, across all three gates at once, as in keras. Orthogonal when
+        omitted; see :class:`ElmanCell` for why the state's own weight is the sensitive draw.
+    bias_initializer : Initializer, optional
+        How :math:`b` and :math:`c` are drawn. Zeros when omitted.
+    """
+
+    def __init__(
+        self,
+        name: str | None,
+        n_in: int,
+        n_hidden: int,
+        activation: Activation | None = None,
+        bias: bool = True,
+        *,
+        gate_activation: Activation | None = None,
+        weight_initializer: Initializer | None = None,
+        recurrent_initializer: Initializer | None = None,
+        bias_initializer: Initializer | None = None,
+    ):
+        self.name = name if name else "GRUCell"
+        self.n_in = n_in
+        self.n_hidden = n_hidden
+        self.activation = activation if activation is not None else Tanh()
+        self.gate_activation = gate_activation if gate_activation is not None else Sigmoid()
+        self.bias = bias
+
+        W_ih_initializer = (
+            XavierNormalInitializer() if weight_initializer is None else weight_initializer
+        )
+        self.W_ih = trainable(
+            W_ih_initializer.initial_value((n_in, 3 * n_hidden)),
+            f"{self.name}_W_ih",
+            initializer=W_ih_initializer,
+        )
+
+        W_hh_initializer = (
+            OrthogonalInitializer() if recurrent_initializer is None else recurrent_initializer
+        )
+        self.W_hh = trainable(
+            W_hh_initializer.initial_value((n_hidden, 3 * n_hidden)),
+            f"{self.name}_W_hh",
+            initializer=W_hh_initializer,
+        )
+
+        if bias:
+            b_initializer = ZeroInitializer() if bias_initializer is None else bias_initializer
+            self.b = trainable(
+                b_initializer.initial_value((3 * n_hidden,)),
+                f"{self.name}_b",
+                initializer=b_initializer,
+            )
+            self.c = trainable(
+                b_initializer.initial_value((n_hidden,)),
+                f"{self.name}_c",
+                initializer=b_initializer,
+            )
+
+    def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
+        (h_prev,) = state
+
+        from_input = x_t @ self.W_ih
+        if self.bias:
+            from_input = from_input + self.b
+        from_state = h_prev @ self.W_hh
+
+        input_r, input_z, input_n = _split_gates(from_input, self.n_hidden)
+        state_r, state_z, state_n = _split_gates(from_state, self.n_hidden)
+        if self.bias:
+            state_n = state_n + self.c
+
+        reset = self.gate_activation(input_r + state_r)
+        update = self.gate_activation(input_z + state_z)
+        candidate = self.activation(input_n + reset * state_n)
+
+        return ((1 - update) * candidate + update * h_prev,)
+
+    def initial_state(self, X: TensorVariable) -> tuple[TensorVariable, ...]:
+        return (_zero_state(X, self.n_hidden, self.W_ih, self.W_hh),)
+
+
+class GRU(Recurrent):
+    r"""
+    Gated recurrent layer over a sequence: a :class:`Recurrent` scanning a :class:`GRUCell`.
+
+    Takes the cell's arguments directly, for the common case where a network wants a plain recurrence
+    and no cell of its own. The parameters live on the cell, as ``gru.cell.W_ih``. See :class:`GRUCell`
+    for the recurrence itself and :class:`Recurrent` for the axes.
+
+    Parameters
+    ----------
+    name : str or None
+        Name prefix for the layer's parameters. Defaults to "GRU" when None.
+    n_in : int
+        Size of the input feature axis.
+    n_hidden : int
+        Size of the hidden state.
+    activation : Activation, optional
+        Applied to the candidate state. Default is :class:`~pytensor_ml.activations.Tanh`.
+    gate_activation : Activation, optional
+        Applied to the reset and update gates. Default is
+        :class:`~pytensor_ml.activations.Sigmoid`; see :class:`GRUCell` for what a gate outside
+        :math:`[0, 1]` does to the step.
+    bias : bool, optional
+        Add the learned shifts. Default is True.
+    weight_initializer : Initializer, optional
+        How :math:`W_{ih}` is drawn. Xavier normal when omitted.
+    recurrent_initializer : Initializer, optional
+        How :math:`W_{hh}` is drawn. Orthogonal when omitted.
+    bias_initializer : Initializer, optional
+        How the biases are drawn. Zeros when omitted.
+    """
+
+    def __init__(
+        self,
+        name: str | None,
+        n_in: int,
+        n_hidden: int,
+        activation: Activation | None = None,
+        bias: bool = True,
+        *,
+        gate_activation: Activation | None = None,
+        weight_initializer: Initializer | None = None,
+        recurrent_initializer: Initializer | None = None,
+        bias_initializer: Initializer | None = None,
+    ):
+        name = name if name else "GRU"
+        super().__init__(
+            GRUCell(
+                name,
+                n_in,
+                n_hidden,
+                activation,
+                bias,
+                gate_activation=gate_activation,
+                weight_initializer=weight_initializer,
+                recurrent_initializer=recurrent_initializer,
+                bias_initializer=bias_initializer,
+            ),
+            name=name,
+        )
+
+
+def _zero_state(X: TensorVariable, n_hidden: int, *parameters: TensorVariable) -> TensorVariable:
+    """One zero state carrying ``X``'s batch axes, at the dtype ``X`` and ``parameters`` promote to."""
+    state_dtype = np.result_type(X.dtype, *(parameter.dtype for parameter in parameters))
+    return pt.zeros((*X.shape[:-2], n_hidden), dtype=state_dtype)
+
+
+def _split_gates(
+    projection: TensorVariable, n_hidden: int
+) -> tuple[TensorVariable, TensorVariable, TensorVariable]:
+    """Cut a stacked projection into its reset, update and candidate parts, in torch's gate order."""
+    # Split rather than three slices: its gradient is one Join, where three slices would each
+    # accumulate into a zero buffer.
+    reset, update, candidate = pt.split(projection, [n_hidden] * 3, n_splits=3, axis=-1)
+    return reset, update, candidate
+
+
+__all__ = ["GRU", "RNN", "ElmanCell", "GRUCell", "Recurrent", "RecurrentCell"]
