@@ -247,8 +247,7 @@ class ElmanCell(RecurrentCell):
         return (self.activation(pre_activation),)
 
     def initial_state(self, X: TensorVariable) -> tuple[TensorVariable, ...]:
-        state_dtype = np.result_type(X.dtype, self.W_ih.dtype, self.W_hh.dtype)
-        return (pt.zeros((*X.shape[:-2], self.n_hidden), dtype=state_dtype),)
+        return (_zero_state(X, self.n_hidden, self.W_ih, self.W_hh),)
 
 
 class RNN(Recurrent):
@@ -306,6 +305,12 @@ class RNN(Recurrent):
             ),
             name=name,
         )
+
+
+def _zero_state(X: TensorVariable, n_hidden: int, *parameters: TensorVariable) -> TensorVariable:
+    """One zero state carrying ``X``'s batch axes, at the dtype ``X`` and ``parameters`` promote to."""
+    state_dtype = np.result_type(X.dtype, *(parameter.dtype for parameter in parameters))
+    return pt.zeros((*X.shape[:-2], n_hidden), dtype=state_dtype)
 
 
 __all__ = ["RNN", "ElmanCell", "Recurrent", "RecurrentCell"]
