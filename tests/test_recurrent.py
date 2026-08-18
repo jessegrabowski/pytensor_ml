@@ -4,7 +4,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pytensor_ml.activations import Activation, ReLU, Tanh
-from pytensor_ml.layers import RNN, ElmanCell, Input, Linear, Recurrent, RecurrentCell
+from pytensor_ml.layers import GRU, RNN, ElmanCell, GRUCell, Input, Linear, Recurrent, RecurrentCell
 from pytensor_ml.loss import SquaredError
 from pytensor_ml.model import Model
 from pytensor_ml.optim import adam
@@ -345,3 +345,266 @@ def test_rejects_an_initial_state_that_does_not_match_the_batch_axes():
         ValueError, match="needs a 2-dimensional state at position 0; got a 1-dimensional one"
     ):
         layer(pt.tensor("X", shape=(None, None, 4)), pt.tensor("h0", shape=(3,)))
+
+
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def unrolled_gru(X_np, W_ih, b, W_hh, c, phi, gate=sigmoid):
+    """The gated recurrence written as a python loop, as the reference to check the scan against."""
+    n_hidden = W_hh.shape[0]
+    h = np.zeros((*X_np.shape[:-2], n_hidden), dtype=floatX)
+    states = []
+    for t in range(X_np.shape[-2]):
+        from_input = X_np[..., t, :] @ W_ih + b
+        from_state = h @ W_hh
+        reset = gate(from_input[..., :n_hidden] + from_state[..., :n_hidden])
+        update = gate(
+            from_input[..., n_hidden : 2 * n_hidden] + from_state[..., n_hidden : 2 * n_hidden]
+        )
+        candidate = phi(
+            from_input[..., 2 * n_hidden :] + reset * (from_state[..., 2 * n_hidden :] + c)
+        )
+        h = (1 - update) * candidate + update * h
+        states.append(h)
+    return np.stack(states, axis=-2)
+
+
+def draw_gru_parameters(layer, rng):
+    """Set every parameter to a fresh draw and hand the values back for the reference to use."""
+    n_in, n_hidden = layer.cell.n_in, layer.cell.n_hidden
+    W_ih = rng.normal(size=(n_in, 3 * n_hidden)).astype(floatX)
+    W_hh = rng.normal(size=(n_hidden, 3 * n_hidden)).astype(floatX)
+    b = rng.normal(size=(3 * n_hidden,)).astype(floatX)
+    c = rng.normal(size=(n_hidden,)).astype(floatX)
+    layer.cell.W_ih.set_value(W_ih)
+    layer.cell.W_hh.set_value(W_hh)
+    layer.cell.b.set_value(b)
+    layer.cell.c.set_value(c)
+    return W_ih, b, W_hh, c
+
+
+@pytest.mark.parametrize(
+    "activation, reference",
+    [(Tanh(), np.tanh), (ReLU(), lambda x: np.maximum(x, 0.0))],
+    ids=["tanh", "relu"],
+)
+def test_the_gru_matches_a_step_by_step_reference(activation, reference, rng):
+    X = pt.tensor("X", shape=(None, None, 4))
+    layer = GRU("gru", n_in=4, n_hidden=3, activation=activation)
+    out = layer(X)
+    assert out.type.shape == (None, None, 3)
+
+    W_ih, b, W_hh, c = draw_gru_parameters(layer, rng)
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+
+    np.testing.assert_allclose(
+        out.eval({X: X_np}), unrolled_gru(X_np, W_ih, b, W_hh, c, reference), atol=ATOL
+    )
+
+
+def test_the_gru_gate_slices_do_not_cross(rng):
+    """Three gates read three slices of one projection, and swapping two of them still produces a
+    plausible sequence. Driving each gate to its own extreme in turn pins which slice is which: the
+    reference loop alone would agree with any consistent misordering of the parameter layout."""
+    X = pt.tensor("X", shape=(None, None, 4))
+    h0 = pt.tensor("h0", shape=(None, 3))
+    layer = GRU("gru", n_in=4, n_hidden=3)
+    out = layer(X, h0)
+
+    W_in = rng.normal(size=(4, 3)).astype(floatX)
+    layer.cell.W_ih.set_value(np.concatenate([np.zeros((4, 6), dtype=floatX), W_in], axis=1))
+    layer.cell.W_hh.set_value(np.zeros((3, 9), dtype=floatX))
+    layer.cell.c.set_value(np.zeros(3, dtype=floatX))
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+    h0_np = rng.normal(size=(5, 3)).astype(floatX)
+
+    # An update gate held open carries the starting state to the end untouched, whatever the input does.
+    layer.cell.b.set_value(np.array([0, 0, 0, 20, 20, 20, 0, 0, 0], dtype=floatX))
+    held = out.eval({X: X_np, h0: h0_np})
+    np.testing.assert_allclose(held, np.broadcast_to(h0_np[:, None, :], (5, 7, 3)), atol=1e-6)
+
+    # A reset gate held shut cuts the state out of the candidate, and with the update gate shut too the
+    # step keeps nothing at all: the layer becomes a memoryless projection.
+    layer.cell.b.set_value(np.array([-20, -20, -20, -20, -20, -20, 0, 0, 0], dtype=floatX))
+    forgotten = out.eval({X: X_np, h0: h0_np})
+    np.testing.assert_allclose(forgotten, np.tanh(X_np @ W_in), atol=1e-6)
+
+
+def test_the_gru_candidate_bias_sits_inside_the_reset_gate(rng):
+    """``c`` is a separate parameter from the candidate's slice of ``b`` only because the reset gate
+    scales it; folded into ``b`` it would survive a shut gate. Everything else is zeroed, so the whole
+    output is the bias the gate does or does not let through."""
+    X = pt.tensor("X", shape=(None, None, 4))
+    layer = GRU("gru", n_in=4, n_hidden=3)
+    out = layer(X)
+
+    layer.cell.W_ih.set_value(np.zeros((4, 9), dtype=floatX))
+    layer.cell.W_hh.set_value(np.zeros((3, 9), dtype=floatX))
+    c = rng.normal(size=(3,)).astype(floatX)
+    layer.cell.c.set_value(c)
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+
+    layer.cell.b.set_value(np.array([20, 20, 20, -20, -20, -20, 0, 0, 0], dtype=floatX))
+    np.testing.assert_allclose(
+        out.eval({X: X_np}), np.broadcast_to(np.tanh(c), (5, 7, 3)), atol=1e-6
+    )
+
+    layer.cell.b.set_value(np.array([-20, -20, -20, -20, -20, -20, 0, 0, 0], dtype=floatX))
+    np.testing.assert_allclose(out.eval({X: X_np}), np.zeros((5, 7, 3)), atol=1e-6)
+
+
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no_bias"])
+def test_the_gru_biases_are_optional(bias, rng):
+    """Dropping the bias drops both parameters as well as both terms; an unused one left behind would
+    hand the optimizer moment state to carry for a weight that never moves."""
+    X = pt.tensor("X", shape=(None, None, 4))
+    layer = GRU("gru", n_in=4, n_hidden=3, bias=bias)
+    out = layer(X)
+
+    W_ih = rng.normal(size=(4, 9)).astype(floatX)
+    W_hh = rng.normal(size=(3, 9)).astype(floatX)
+    layer.cell.W_ih.set_value(W_ih)
+    layer.cell.W_hh.set_value(W_hh)
+    b = np.zeros(9, dtype=floatX)
+    c = np.zeros(3, dtype=floatX)
+    if bias:
+        b = rng.normal(size=(9,)).astype(floatX)
+        c = rng.normal(size=(3,)).astype(floatX)
+        layer.cell.b.set_value(b)
+        layer.cell.c.set_value(c)
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+
+    assert set(collect_trainable_params(out)) == (
+        {layer.cell.W_ih, layer.cell.W_hh, layer.cell.b, layer.cell.c}
+        if bias
+        else {layer.cell.W_ih, layer.cell.W_hh}
+    )
+    np.testing.assert_allclose(
+        out.eval({X: X_np}), unrolled_gru(X_np, W_ih, b, W_hh, c, np.tanh), atol=ATOL
+    )
+
+
+def test_the_gru_recurrent_weight_is_drawn_orthogonal_by_default():
+    """One draw covers all three gates, as in keras, so the check is on the whole wide matrix rather
+    than on each gate's block."""
+    layer = GRU("gru", n_in=16, n_hidden=32)
+
+    W_hh = layer.cell.W_hh.get_value()
+    assert W_hh.shape == (32, 96)
+    np.testing.assert_allclose(W_hh @ W_hh.T, np.eye(32), atol=ATOL)
+
+    W_ih = layer.cell.W_ih.get_value()
+    assert np.abs(W_ih @ W_ih.T - np.eye(16)).max() > 0.1
+    # Both fans count the stacked axis, so the spread would be wrong if the draw saw one gate's shape.
+    assert W_ih.std() == pytest.approx(np.sqrt(2.0 / (16 + 96)), rel=0.1)
+
+
+def test_the_gru_forwards_its_initializers_to_the_cell():
+    """Four keyword-only arguments reach the cell through the flat constructor, and one dropped on the
+    floor leaves a parameter silently at its default draw. Both biases share the one keyword."""
+    layer = GRU(
+        "gru",
+        n_in=4,
+        n_hidden=3,
+        recurrent_initializer=ZeroInitializer(),
+        bias_initializer=OneInitializer(),
+    )
+
+    np.testing.assert_array_equal(layer.cell.W_hh.get_value(), np.zeros((3, 9)))
+    np.testing.assert_array_equal(layer.cell.b.get_value(), np.ones(9))
+    np.testing.assert_array_equal(layer.cell.c.get_value(), np.ones(3))
+    assert np.abs(layer.cell.W_ih.get_value()).max() > 0.0
+
+
+def test_the_gru_trains_end_to_end(rng):
+    """Gradients survive the round trip through the gates and the training machinery moves them."""
+    X = Input("X", shape=(None, 6, 4))
+    y = Linear("head", 5, 1)(GRU("gru", n_in=4, n_hidden=5)(X)[..., -1, :])
+    model = Model(X, y).initialize(seed=1)
+    step = model.compile_train(adam(learning_rate=0.05), SquaredError(), ndim_out=2)
+
+    X_np = rng.normal(size=(32, 6, 4)).astype(floatX)
+    y_np = X_np.sum(axis=(1, 2))[:, None].astype(floatX)
+
+    losses = [float(step(X_np, y_np)) for _ in range(50)]
+    assert losses[-1] < losses[0] / 5
+
+
+def test_the_gru_is_a_recurrent_over_a_gru_cell(rng):
+    """The flat constructor is a convenience over the cell, and has to build the same graph as writing
+    the two out by hand."""
+    X = pt.tensor("X", shape=(None, None, 4))
+    layer = GRU("gru", n_in=4, n_hidden=3)
+    assert isinstance(layer, Recurrent)
+    assert isinstance(layer.cell, GRUCell)
+
+    by_hand = Recurrent(GRUCell("gru", n_in=4, n_hidden=3), name="gru")
+    W_ih, b, W_hh, c = draw_gru_parameters(layer, rng)
+    by_hand.cell.W_ih.set_value(W_ih)
+    by_hand.cell.W_hh.set_value(W_hh)
+    by_hand.cell.b.set_value(b)
+    by_hand.cell.c.set_value(c)
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+
+    np.testing.assert_allclose(layer(X).eval({X: X_np}), by_hand(X).eval({X: X_np}), atol=ATOL)
+
+
+def test_the_gru_gates_take_their_own_activation(rng):
+    """The gates and the candidate have separate keywords, and setting one must leave the other alone.
+    A hard sigmoid clipped at the same endpoints is the substitution a reader would actually make, and
+    it disagrees with the logistic everywhere except the two points where they cross."""
+
+    class HardSigmoid(Activation):
+        def __call__(self, x):
+            return pt.clip(x * 0.2 + 0.5, 0.0, 1.0)
+
+    def hard_sigmoid(x):
+        return np.clip(x * 0.2 + 0.5, 0.0, 1.0)
+
+    X = pt.tensor("X", shape=(None, None, 4))
+    layer = GRU("gru", n_in=4, n_hidden=3, gate_activation=HardSigmoid())
+    out = layer(X)
+
+    W_ih, b, W_hh, c = draw_gru_parameters(layer, rng)
+    X_np = rng.normal(size=(5, 7, 4)).astype(floatX)
+    hard = out.eval({X: X_np})
+
+    np.testing.assert_allclose(
+        hard, unrolled_gru(X_np, W_ih, b, W_hh, c, np.tanh, gate=hard_sigmoid), atol=ATOL
+    )
+    # The candidate still runs through tanh, so the default cell is a different function, not a rescaling.
+    logistic = unrolled_gru(X_np, W_ih, b, W_hh, c, np.tanh)
+    assert np.abs(hard - logistic).max() > 0.01
+
+
+@pytest.mark.parametrize(
+    "batch_shape", [(), (5,), (2, 5)], ids=["unbatched", "one_axis", "two_axes"]
+)
+def test_the_gru_recurs_over_any_number_of_batch_axes(batch_shape, rng):
+    """Every gate is a slice of the last axis, and the candidate's bias broadcasts against whatever
+    batch axes precede it. A bare sequence has none at all, and a stacked batch has two."""
+    X = pt.tensor("X", shape=(*(None for _ in batch_shape), None, 4))
+    layer = GRU("gru", n_in=4, n_hidden=3)
+    out = layer(X)
+
+    W_ih, b, W_hh, c = draw_gru_parameters(layer, rng)
+    X_np = rng.normal(size=(*batch_shape, 7, 4)).astype(floatX)
+
+    np.testing.assert_allclose(
+        out.eval({X: X_np}), unrolled_gru(X_np, W_ih, b, W_hh, c, np.tanh), atol=ATOL
+    )
+
+
+def test_the_gru_state_takes_the_dtype_the_step_produces():
+    """A float32 cell fed a float64 sequence. The cell has to hand the state builder every parameter its
+    step touches; naming too few, or pinning the state to floatX, leaves scan comparing float32 against
+    the float64 the step returns and refusing the graph. Every other test here runs at one dtype."""
+    with pytensor.config.change_flags(floatX="float32"):
+        layer = GRU("gru", n_in=4, n_hidden=3)
+        X = pt.tensor("X", shape=(None, None, 4), dtype="float64")
+        out = layer(X)
+
+        assert out.dtype == "float64"
+        assert out.eval({X: np.zeros((2, 5, 4), dtype="float64")}).dtype == np.dtype("float64")
