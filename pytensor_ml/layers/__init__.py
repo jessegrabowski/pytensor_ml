@@ -8,7 +8,17 @@ from pytensor_ml.layers.attention import (
     scaled_dot_product_attention,
 )
 from pytensor_ml.layers.combinators import Concatenate, Input, Sequential, Squeeze
-from pytensor_ml.layers.conv import Conv1D, Conv2D, ConvLayer
+from pytensor_ml.layers.conv import (
+    AvgPool1D,
+    AvgPool2D,
+    Conv1D,
+    Conv2D,
+    ConvLayer,
+    MaxPool1D,
+    MaxPool2D,
+    PoolLayer,
+    PoolLayerGrad,
+)
 from pytensor_ml.layers.dropout import Dropout, DropoutLayer
 from pytensor_ml.layers.embedding import Embedding, EmbeddingLayer
 from pytensor_ml.layers.linear import Linear, LinearLayer
@@ -37,6 +47,8 @@ __all__ = [
     "GRU",
     "LSTM",
     "RNN",
+    "AvgPool1D",
+    "AvgPool2D",
     "BatchNorm2D",
     "Bidirectional",
     "CausalSelfAttention",
@@ -54,7 +66,11 @@ __all__ = [
     "Layer",
     "LayerNorm",
     "Linear",
+    "MaxPool1D",
+    "MaxPool2D",
     "MultiheadAttention",
+    "PoolLayer",
+    "PoolLayerGrad",
     "Recurrent",
     "RecurrentCell",
     "Sequential",
