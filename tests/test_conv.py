@@ -6,7 +6,14 @@ import pytest
 from scipy.signal import correlate
 
 from pytensor_ml.layers import Conv1D, Input, Linear
-from pytensor_ml.layers.conv import ConvLayer, _extract_patches
+from pytensor_ml.layers.conv import (
+    Col2Im,
+    ConvLayer,
+    ConvLayerGrad,
+    Im2Col,
+    _extract_patches,
+    _scatter_patches,
+)
 from pytensor_ml.loss import SquaredError
 from pytensor_ml.model import Model
 from pytensor_ml.optim import adam
@@ -444,3 +451,167 @@ def test_a_kernel_of_one_is_a_linear_layer_applied_per_step(rng):
 
     X_np = rng.normal(size=(3, 7, 4)).astype(floatX)
     np.testing.assert_allclose(conv(X).eval({X: X_np}), linear(X).eval({X: X_np}), atol=ATOL)
+
+
+@pytest.mark.parametrize(
+    "spatial, kernel_size, stride, dilation",
+    [
+        ((11,), (3,), (1,), (1,)),
+        ((11,), (3,), (2,), (2,)),
+        ((7, 9), (2, 3), (2, 1), (1, 2)),
+        ((6, 6, 6), (2, 2, 2), (1, 1, 1), (1, 1, 1)),
+    ],
+    ids=["1d", "1d_strided_dilated", "2d_asymmetric", "3d"],
+)
+def test_im2col_matches_the_reference_gather_at_every_rank(
+    spatial, kernel_size, stride, dilation, rng
+):
+    """The op stands in for the advanced-indexing gather, so it has to agree with it exactly, at every
+    rank and not only the ranks a layer happens to build. The 3-D case is the regression: a dispatch
+    that handles some ranks and refuses the rest does not fall back, it fails to compile."""
+    X = pt.tensor("X", shape=(2, *spatial, 3))
+    X_np = rng.normal(size=(2, *spatial, 3)).astype(floatX)
+
+    reference = _extract_patches(X, kernel_size, stride, dilation).eval({X: X_np})
+    got = pytensor.function([X], Im2Col(kernel_size, stride, dilation)(X))(X_np)
+
+    assert got.shape == reference.shape
+    np.testing.assert_array_equal(got, reference)
+
+
+def test_im2col_infers_the_shape_it_produces(rng):
+    """`infer_shape` is what lets the rest of the graph reason about the gather without running it, so
+    a formula that drifts from `perform` would mis-shape everything downstream and only fail later."""
+    X = pt.tensor("X", shape=(None, None, 3))
+    patches = Im2Col((3,), (2,), (2,))(X)
+    X_np = rng.normal(size=(2, 13, 3)).astype(floatX)
+
+    inferred = pytensor.function([X], patches.shape)(X_np)
+    np.testing.assert_array_equal(inferred, pytensor.function([X], patches)(X_np).shape)
+
+
+def test_the_input_gradient_is_dropped_when_nothing_reads_it(rng):
+    """`ConvLayer.pullback` always asks for both gradients, because only the graph knows which are
+    wanted. The rewrite lowers `compute_dX` where the input gradient has no clients -- the first
+    convolution of a network -- so the backward computes one gradient rather than two."""
+    X = pt.tensor("X", shape=(4, 24, 3))
+    layer = Conv1D("conv", in_channels=3, out_channels=5, kernel_size=3)
+    cost = layer(X).sum()
+
+    def grad_op(targets):
+        fn = pytensor.function([X], targets)
+        return next(
+            node.op for node in fn.maker.fgraph.apply_nodes if isinstance(node.op, ConvLayerGrad)
+        )
+
+    assert grad_op([pt.grad(cost, layer.W)]).compute_dX is False
+    assert grad_op(pt.grad(cost, [layer.W, X])).compute_dX is True
+
+    # Dropping the output must not change the one that is kept.
+    X_np = rng.normal(size=(4, 24, 3)).astype(floatX)
+    alone = pytensor.function([X], pt.grad(cost, layer.W))(X_np)
+    alongside = pytensor.function([X], pt.grad(cost, [layer.W, X]))(X_np)[0]
+    np.testing.assert_allclose(alone, alongside, atol=ATOL)
+
+
+@pytest.mark.parametrize(
+    "spatial, kernel_size, stride, dilation",
+    [
+        ((11,), (3,), (1,), (1,)),
+        ((11,), (3,), (2,), (2,)),
+        ((12,), (3,), (5,), (1,)),
+        ((7, 9), (2, 3), (2, 1), (1, 2)),
+        ((6, 6, 6), (2, 2, 2), (1, 1, 1), (1, 1, 1)),
+    ],
+    ids=["1d", "1d_strided_dilated", "1d_untouched_tail", "2d_asymmetric", "3d"],
+)
+def test_col2im_matches_the_reference_scatter_at_every_rank(
+    spatial, kernel_size, stride, dilation, rng
+):
+    """The op stands in for the `inc_subtensor` scatter, so it has to agree with it exactly. The
+    untouched-tail case is the one a scatter can get wrong on its own terms: a stride that overshoots
+    leaves positions no window reaches, and those have to stay zero rather than pick up a neighbor."""
+    X = pt.tensor("X", shape=(2, *spatial, 3))
+    X_np = rng.normal(size=(2, *spatial, 3)).astype(floatX)
+    patches_np = pytensor.function([X], Im2Col(kernel_size, stride, dilation)(X))(X_np)
+
+    cotangent = pt.tensor("cotangent", shape=patches_np.shape)
+    reference = pytensor.function(
+        [cotangent, X],
+        _scatter_patches(cotangent, X, kernel_size, stride, dilation),
+        on_unused_input="ignore",
+    )(patches_np, X_np)
+    got = pytensor.function(
+        [cotangent], Col2Im(kernel_size, stride, dilation)(cotangent, *spatial)
+    )(patches_np)
+
+    assert got.shape == reference.shape
+    np.testing.assert_allclose(got, reference, atol=ATOL)
+
+
+def test_col2im_keeps_a_spatial_extent_it_is_given_statically():
+    """The extents arrive as inputs rather than as props, so a known one has to survive as a static
+    shape -- otherwise every backward pass loses the shape its forward had."""
+    cotangent = pt.tensor("cotangent", shape=(2, 9, 3, 3))
+    length = pt.scalar("length", dtype="int64")
+
+    assert Col2Im((3,), (1,), (1,))(cotangent, 11).type.shape == (2, 11, 3)
+    assert Col2Im((3,), (1,), (1,))(cotangent, length).type.shape == (2, None, 3)
+
+
+def test_col2im_gathers_the_cotangent_it_scattered(rng):
+    """A scatter-add's pullback is the gather that reverses it, so seeding the output with any
+    cotangent has to come back as that cotangent gathered into the windows that reached it."""
+    patches = pt.tensor("patches", shape=(2, 9, 3, 3))
+    scattered = Col2Im((3,), (1,), (1,))(patches, 11)
+    seed = pt.tensor("seed", shape=(2, 11, 3))
+    seed_np = rng.normal(size=(2, 11, 3)).astype(floatX)
+
+    pulled_back = pt.grad(cost=None, wrt=patches, known_grads={scattered: seed})
+    gathered = Im2Col((3,), (1,), (1,))(seed)
+
+    np.testing.assert_allclose(
+        pulled_back.eval({seed: seed_np}), gathered.eval({seed: seed_np}), atol=ATOL
+    )
+
+
+@pytest.mark.parametrize("view", ["transposed", "reversed"])
+def test_im2col_accepts_an_input_it_cannot_assume_is_contiguous(view, rng):
+    """`TensorType` carries no layout, so a kernel is typed against any layout whatever the data turns
+    out to be. One that quietly needs a contiguous buffer does not fall back to `perform` when it does
+    not get one -- it fails to compile, for every caller."""
+    X_np = rng.normal(size=(2, 3, 11)).astype(floatX)
+    X = pt.tensor("X", shape=(2, 3, 11))
+    source = X.transpose(0, 2, 1) if view == "transposed" else X[:, :, ::-1].transpose(0, 2, 1)
+
+    got = pytensor.function([X], Im2Col((3,), (1,), (1,))(source))(X_np)
+    reference = _extract_patches(source, (3,), (1,), (1,)).eval({X: X_np})
+
+    np.testing.assert_allclose(got, reference, atol=ATOL)
+
+
+def test_col2im_needs_one_extent_per_spatial_axis():
+    """The extents are positional, so a caller passing the wrong number of them would otherwise build
+    a node whose rank silently disagrees with the kernel's."""
+    patches = pt.tensor("patches", shape=(2, 9, 3, 3))
+
+    with pytest.raises(ValueError, match="needs that many extents"):
+        Col2Im((3, 3), (1, 1), (1, 1))(patches, 11)
+
+
+def test_the_gather_backward_runs_when_the_spatial_extent_is_only_known_at_runtime(rng):
+    """`Im2Col.pullback` hands the input's spatial extents to the scatter as ordinary inputs, so an
+    extent nobody knows until the graph runs has to arrive as a value rather than as a constant folded
+    into the node."""
+    X_np = rng.normal(size=(2, 11, 3)).astype(floatX)
+    seed_np = rng.normal(size=(2, 9, 3, 3)).astype(floatX)
+    seed = pt.tensor("seed", shape=(2, 9, 3, 3))
+
+    gradients = []
+    for spatial in (None, 11):
+        X = pt.tensor("X", shape=(2, spatial, 3))
+        patches = Im2Col((3,), (1,), (1,))(X)
+        pulled_back = pt.grad(cost=None, wrt=X, known_grads={patches: seed})
+        gradients.append(pytensor.function([X, seed], pulled_back)(X_np, seed_np))
+
+    np.testing.assert_allclose(*gradients, atol=ATOL)
