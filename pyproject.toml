@@ -61,8 +61,8 @@ notebook = [
     "matplotlib",
     "seaborn",
     "scikit-learn",
-    "tqdm",
-    "ipywidgets",  # tqdm.notebook renders its progress bar through a widget under jupyter
+    "rich",
+    "ipywidgets",  # rich renders its live progress display through a widget under jupyter
 ]
 dev = ["pytensor_ml[test,lint]"]
 
