@@ -13,7 +13,7 @@ from pytensor.tensor.basic import get_scalar_constant_value
 from pytensor.tensor.pad import PadMode
 from pytensor.tensor.variable import TensorVariable
 
-from pytensor_ml.base import Layer, LayerOp, UnaryLayerOp, _check_input_rank
+from pytensor_ml.base import Layer, LayerOp, UnaryLayerOp, _check_input_rank, _resolve_layer_name
 from pytensor_ml.layers.padding import _pad_spatial
 from pytensor_ml.params import trainable_parameter
 from pytensor_ml.state import Initializer, XavierNormalInitializer, ZeroInitializer
@@ -730,20 +730,20 @@ class _ConvNd(Layer):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         in_channels: int,
         out_channels: int,
         kernel_size: int | Sequence[int],
         stride: int | Sequence[int] = 1,
         dilation: int | Sequence[int] = 1,
         padding: str | int | Sequence[int] = "valid",
-        *,
         padding_mode: PadMode = "constant",
         bias: bool = True,
         weight_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
     ):
-        self.name = name if name else type(self).__name__
+        self.name = _resolve_layer_name(name, type(self).__name__, "in_channels")
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = _as_spatial_tuple(kernel_size, self.n_spatial, "kernel_size")
@@ -763,7 +763,10 @@ class _ConvNd(Layer):
         )
         if bias:
             self.b = trainable_parameter(
-                f"{self.name}_b", (out_channels,), bias_initializer, ZeroInitializer()
+                f"{self.name}_b",
+                (out_channels,),
+                bias_initializer,
+                ZeroInitializer(),
             )
 
     def __call__(self, X: pt.TensorLike) -> TensorVariable:
@@ -924,7 +927,8 @@ class _ConvTransposeNd(_ConvNd):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         in_channels: int,
         out_channels: int,
         kernel_size: int | Sequence[int],
@@ -932,7 +936,6 @@ class _ConvTransposeNd(_ConvNd):
         dilation: int | Sequence[int] = 1,
         padding: str | int | Sequence[int] = 0,
         output_padding: int | Sequence[int] = 0,
-        *,
         bias: bool = True,
         weight_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
@@ -944,9 +947,9 @@ class _ConvTransposeNd(_ConvNd):
             )
         super().__init__(
             name,
-            in_channels,
-            out_channels,
-            kernel_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
             stride=stride,
             dilation=dilation,
             padding=padding,
@@ -1138,12 +1141,13 @@ class _PoolNd(Layer):
     def __init__(
         self,
         name: str | None = None,
+        *,
         kernel_size: int | Sequence[int] = 2,
         stride: int | Sequence[int] | None = None,
         dilation: int | Sequence[int] = 1,
         padding: str | int | Sequence[int] = "valid",
     ):
-        self.name = name if name else type(self).__name__
+        self.name = _resolve_layer_name(name, type(self).__name__, "kernel_size")
         self.kernel_size = _as_spatial_tuple(kernel_size, self.n_spatial, "kernel_size")
         self.stride = (
             self.kernel_size

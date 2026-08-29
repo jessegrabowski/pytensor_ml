@@ -9,7 +9,7 @@ from pytensor.scan import scan
 from pytensor.tensor.variable import TensorVariable
 
 from pytensor_ml.activations import Activation, Sigmoid, Tanh
-from pytensor_ml.base import Layer
+from pytensor_ml.base import Layer, _resolve_layer_name
 from pytensor_ml.params import trainable_parameter
 from pytensor_ml.state import (
     Initializer,
@@ -131,9 +131,9 @@ class Recurrent(Layer):
         hidden_states = Recurrent(GRUCell("cell", n_in=16, n_hidden=32), reverse=True)(X)
     """
 
-    def __init__(self, cell: RecurrentCell, name: str | None = None, reverse: bool = False):
+    def __init__(self, cell: RecurrentCell, *, name: str | None = None, reverse: bool = False):
         self.cell = cell
-        self.name = name if name else "Recurrent"
+        self.name = _resolve_layer_name(name, type(self).__name__)
         self.reverse = reverse
 
     def __call__(
@@ -319,17 +319,17 @@ class ElmanCell(RecurrentCell):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         n_in: int,
         n_hidden: int,
         activation: Activation | None = None,
         bias: bool = True,
-        *,
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
     ):
-        self.name = name if name else "ElmanCell"
+        self.name = _resolve_layer_name(name, type(self).__name__, "n_in")
         self.n_in = n_in
         self.n_hidden = n_hidden
         self.activation = activation if activation is not None else Tanh()
@@ -338,11 +338,17 @@ class ElmanCell(RecurrentCell):
         # Held directly rather than as a nested Linear: the projection runs inside the recurrence, and a
         # layer op there would bury its matmul in an inner graph where the scan rewrites cannot see it.
         self.W_ih = trainable_parameter(
-            f"{self.name}_W_ih", (n_in, n_hidden), weight_initializer, XavierNormalInitializer()
+            f"{self.name}_W_ih",
+            (n_in, n_hidden),
+            weight_initializer,
+            XavierNormalInitializer(),
         )
         if bias:
             self.b = trainable_parameter(
-                f"{self.name}_b", (n_hidden,), bias_initializer, ZeroInitializer()
+                f"{self.name}_b",
+                (n_hidden,),
+                bias_initializer,
+                ZeroInitializer(),
             )
         self.W_hh = trainable_parameter(
             f"{self.name}_W_hh",
@@ -407,12 +413,12 @@ class RNN(Recurrent):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         n_in: int,
         n_hidden: int,
         activation: Activation | None = None,
         bias: bool = True,
-        *,
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
@@ -422,10 +428,10 @@ class RNN(Recurrent):
         super().__init__(
             ElmanCell(
                 name,
-                n_in,
-                n_hidden,
-                activation,
-                bias,
+                n_in=n_in,
+                n_hidden=n_hidden,
+                activation=activation,
+                bias=bias,
                 weight_initializer=weight_initializer,
                 recurrent_initializer=recurrent_initializer,
                 bias_initializer=bias_initializer,
@@ -499,18 +505,18 @@ class GRUCell(RecurrentCell):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         n_in: int,
         n_hidden: int,
         activation: Activation | None = None,
         bias: bool = True,
-        *,
         gate_activation: Activation | None = None,
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
     ):
-        self.name = name if name else "GRUCell"
+        self.name = _resolve_layer_name(name, type(self).__name__, "n_in")
         self.n_in = n_in
         self.n_hidden = n_hidden
         self.activation = activation if activation is not None else Tanh()
@@ -531,10 +537,16 @@ class GRUCell(RecurrentCell):
         )
         if bias:
             self.b = trainable_parameter(
-                f"{self.name}_b", (self._n_gates * n_hidden,), bias_initializer, ZeroInitializer()
+                f"{self.name}_b",
+                (self._n_gates * n_hidden,),
+                bias_initializer,
+                ZeroInitializer(),
             )
             self.c = trainable_parameter(
-                f"{self.name}_c", (n_hidden,), bias_initializer, ZeroInitializer()
+                f"{self.name}_c",
+                (n_hidden,),
+                bias_initializer,
+                ZeroInitializer(),
             )
 
     def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
@@ -608,12 +620,12 @@ class GRU(Recurrent):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         n_in: int,
         n_hidden: int,
         activation: Activation | None = None,
         bias: bool = True,
-        *,
         gate_activation: Activation | None = None,
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
@@ -624,10 +636,10 @@ class GRU(Recurrent):
         super().__init__(
             GRUCell(
                 name,
-                n_in,
-                n_hidden,
-                activation,
-                bias,
+                n_in=n_in,
+                n_hidden=n_hidden,
+                activation=activation,
+                bias=bias,
                 gate_activation=gate_activation,
                 weight_initializer=weight_initializer,
                 recurrent_initializer=recurrent_initializer,
@@ -705,18 +717,18 @@ class LSTMCell(RecurrentCell):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         n_in: int,
         n_hidden: int,
         activation: Activation | None = None,
         bias: bool = True,
-        *,
         gate_activation: Activation | None = None,
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
         bias_initializer: Initializer | None = None,
     ):
-        self.name = name if name else "LSTMCell"
+        self.name = _resolve_layer_name(name, type(self).__name__, "n_in")
         self.n_in = n_in
         self.n_hidden = n_hidden
         self.activation = activation if activation is not None else Tanh()
@@ -737,7 +749,10 @@ class LSTMCell(RecurrentCell):
         )
         if bias:
             self.b = trainable_parameter(
-                f"{self.name}_b", (self._n_gates * n_hidden,), bias_initializer, ZeroInitializer()
+                f"{self.name}_b",
+                (self._n_gates * n_hidden,),
+                bias_initializer,
+                ZeroInitializer(),
             )
 
     def step(self, x_t: TensorVariable, *state: TensorVariable) -> tuple[TensorVariable, ...]:
@@ -813,12 +828,12 @@ class LSTM(Recurrent):
 
     def __init__(
         self,
-        name: str | None,
+        name: str | None = None,
+        *,
         n_in: int,
         n_hidden: int,
         activation: Activation | None = None,
         bias: bool = True,
-        *,
         gate_activation: Activation | None = None,
         weight_initializer: Initializer | None = None,
         recurrent_initializer: Initializer | None = None,
@@ -829,10 +844,10 @@ class LSTM(Recurrent):
         super().__init__(
             LSTMCell(
                 name,
-                n_in,
-                n_hidden,
-                activation,
-                bias,
+                n_in=n_in,
+                n_hidden=n_hidden,
+                activation=activation,
+                bias=bias,
                 gate_activation=gate_activation,
                 weight_initializer=weight_initializer,
                 recurrent_initializer=recurrent_initializer,
@@ -881,7 +896,7 @@ class Bidirectional(Layer):
         hidden_states = Bidirectional(forward, backward)(X)
     """
 
-    def __init__(self, forward: Recurrent, backward: Recurrent, name: str | None = None):
+    def __init__(self, forward: Recurrent, backward: Recurrent, *, name: str | None = None):
         if forward is backward:
             raise ValueError(
                 "Bidirectional needs two layers so each direction has its own parameters to learn its "
@@ -889,7 +904,7 @@ class Bidirectional(Layer):
             )
         self.forward = forward
         self.backward = backward
-        self.name = name if name else "Bidirectional"
+        self.name = _resolve_layer_name(name, type(self).__name__)
 
     def __call__(self, X: pt.TensorLike, *, mask: pt.TensorLike | None = None) -> TensorVariable:
         """
