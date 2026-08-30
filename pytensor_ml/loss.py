@@ -45,6 +45,24 @@ class Loss(ABC):
     @abstractmethod
     def loss(self, y_true, y_pred) -> pt.TensorVariable: ...
 
+    def target_ndim(self, prediction_ndim: int) -> int:
+        """
+        Return the rank of the target this loss reads, given a prediction of rank ``prediction_ndim``.
+
+        The default suits a loss that compares elementwise; override it for one that reads labels in a
+        denser encoding.
+        """
+        return prediction_ndim
+
+    def target_dtype(self, prediction_dtype: str) -> str:
+        """
+        Return the dtype of the target this loss reads, given a prediction of ``prediction_dtype``.
+
+        The default suits a loss that compares against the prediction; override it for one that indexes
+        with the target rather than subtracting it.
+        """
+        return prediction_dtype
+
     def __call__(self, y_true, y_pred) -> pt.TensorVariable:
         return self.loss(y_true, y_pred)
 
@@ -135,6 +153,14 @@ class CrossEntropy(Loss):
         self.expect_logits = expect_logits
         self.expect_onehot_labels = expect_onehot_labels
 
+    def target_ndim(self, prediction_ndim: int) -> int:
+        """One-hot labels are shaped like the prediction; integer labels drop its class axis."""
+        return prediction_ndim if self.expect_onehot_labels else prediction_ndim - 1
+
+    def target_dtype(self, prediction_dtype: str) -> str:
+        """Integer labels index the class axis, so they cannot carry the prediction's float dtype."""
+        return prediction_dtype if self.expect_onehot_labels else "int64"
+
     def loss(self, y_true: pt.TensorVariable, y_pred: pt.TensorVariable) -> pt.TensorVariable:
         """
         Parameters
@@ -169,23 +195,21 @@ class CrossEntropy(Loss):
 def supervised_loss(
     prediction: pt.TensorVariable,
     loss_fn: Loss,
-    ndim_out: int = 1,
 ) -> tuple[pt.TensorVariable, pt.TensorVariable]:
     """
     Build a training loss and its target placeholder from a model prediction.
 
-    The target is a fresh input variable shaped like the labelled slice of ``prediction``: its first
-    ``ndim_out`` dimensions match ``prediction`` and any trailing dimensions are dropped. For example, a
-    ``(batch, classes)`` logit prediction with ``ndim_out=2`` yields a ``(batch, classes)`` target.
+    The target is a fresh input variable shaped like the labeled slice of ``prediction``, whose rank and
+    dtype ``loss_fn`` decides through :meth:`Loss.target_ndim` and :meth:`Loss.target_dtype`.
+    :class:`SquaredError` compares elementwise and takes a target shaped like the prediction;
+    :class:`CrossEntropy` reading integer labels drops its class axis and takes integers.
 
     Parameters
     ----------
     prediction : TensorVariable
         Model output to compare against the target.
     loss_fn : Loss
-        Callable ``(target, prediction) -> scalar loss``.
-    ndim_out : int
-        Number of leading prediction dimensions the target shares. Default 1.
+        Callable ``(target, prediction) -> scalar loss``, which also states the target it reads.
 
     Returns
     -------
@@ -208,11 +232,15 @@ def supervised_loss(
         logits = Linear("logits", n_in=4, n_out=3)(X)
 
         loss_fn = CrossEntropy(expect_logits=True, expect_onehot_labels=True)
-        objective, target = supervised_loss(logits, loss_fn, ndim_out=2)
+        objective, target = supervised_loss(logits, loss_fn)
 
         step = compile_train(objective, adam(1e-3), inputs=[X, target])
     """
-    label_slice = (slice(None),) * ndim_out + (0,) * (prediction.ndim - ndim_out)
-    target = prediction[label_slice].type()
-    target.name = "target"
+    target_ndim = loss_fn.target_ndim(prediction.ndim)
+    label_slice = (slice(None),) * target_ndim + (0,) * (prediction.ndim - target_ndim)
+    target = pt.tensor(
+        "target",
+        shape=prediction[label_slice].type.shape,
+        dtype=loss_fn.target_dtype(prediction.dtype),
+    )
     return loss_fn(target, prediction), target
