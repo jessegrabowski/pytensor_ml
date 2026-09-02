@@ -1,10 +1,19 @@
+import numpy as np
+import pytensor
 import pytensor.tensor as pt
 import pytest
 
 from pytensor.graph.basic import equal_computations
 
 from pytensor_ml.layers import BatchNorm, Dropout, Linear, PredictionBatchNormLayer, Sequential
-from pytensor_ml.pytensorf import rewrite_for_prediction
+from pytensor_ml.layers.dropout import DropoutLayer
+from pytensor_ml.pytensorf import function, rewrite_for_prediction
+
+floatX = pytensor.config.floatX
+
+
+def dropout_layers_in(compiled):
+    return [node for node in compiled.maker.fgraph.apply_nodes if isinstance(node.op, DropoutLayer)]
 
 
 def test_remove_dropout():
@@ -50,3 +59,59 @@ def test_rewrite_leaves_batch_norm_without_running_stats_alone():
     )(X)
 
     assert equal_computations([rewrite_for_prediction(normalized)], [normalized])
+
+
+def test_a_dropout_that_keeps_everything_is_dropped_at_compile_time():
+    """Nothing is sampled at ``p=0``, but the graph still records the layer the user asked for, so the
+    saving is the compiler's to make."""
+    X = pt.tensor("X", shape=(None, 6))
+    built = Dropout("d", p=0.0, random_state=0)(X)
+
+    assert any(
+        isinstance(node.op, DropoutLayer)
+        for node in pytensor.graph.FunctionGraph(outputs=[built], clone=False).apply_nodes
+    )
+
+    compiled = pytensor.function([X], built)
+    X_np = np.random.default_rng(0).normal(size=(4, 6)).astype(floatX)
+
+    assert dropout_layers_in(compiled) == []
+    np.testing.assert_allclose(compiled(X_np), X_np)
+
+
+def test_a_dropout_that_keeps_nothing_is_dropped_at_compile_time():
+    """Keeping nothing scales the survivors by 1/0, which pytensor evaluates while canonicalizing even
+    though the branch it sits on is never selected."""
+    X = pt.tensor("X", shape=(None, 6))
+    built = Dropout("d", p=1.0, random_state=0)(X)
+
+    assert any(
+        isinstance(node.op, DropoutLayer)
+        for node in pytensor.graph.FunctionGraph(outputs=[built], clone=False).apply_nodes
+    )
+
+    compiled = pytensor.function([X], built)
+    X_np = np.random.default_rng(0).normal(size=(4, 6)).astype(floatX)
+
+    assert dropout_layers_in(compiled) == []
+    np.testing.assert_allclose(compiled(X_np), np.zeros_like(X_np))
+
+
+def test_an_ordinary_dropout_survives_compilation():
+    """The rewrite reads the probability off the op, so being too eager here would silently switch
+    dropout off in training."""
+    X = pt.tensor("X", shape=(None, 6))
+    compiled = pytensor.function([X], Dropout("d", p=0.5, random_state=0)(X))
+
+    assert len(dropout_layers_in(compiled)) == 1
+
+
+@pytest.mark.parametrize("p", [0.0, 1.0], ids=["keeps_everything", "keeps_nothing"])
+def test_a_degenerate_dropout_is_dropped_through_the_project_compile_path(p):
+    """:func:`~pytensor_ml.pytensorf.function` compiles with a mode of its own, which has to keep
+    carrying pytensor's specializations or a rewrite registered into them stops reaching real models."""
+    X = pt.tensor("X", shape=(None, 6))
+
+    compiled = function([X], Dropout("d", p=p, random_state=0)(X))
+
+    assert dropout_layers_in(compiled) == []
