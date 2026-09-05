@@ -1,8 +1,10 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from pytensor.graph.basic import Variable
 
-Builder = Callable[[dict], tuple[list[Variable], Variable | Sequence[Variable]]]
+from pytensor_ml.models.keys import KeyMap
+
+Builder = Callable[[dict, KeyMap], tuple[list[Variable], Variable | list[Variable]]]
 
 _BUILDERS: dict[str, Builder] = {}
 
@@ -57,13 +59,15 @@ def register_builder(architecture: str) -> Callable[[Builder], Builder]:
     .. code-block:: python
 
         from pytensor_ml.layers import Input, Linear
-        from pytensor_ml.models import register_builder
+        from pytensor_ml.models import channels_last, register_builder
 
 
         @register_builder("MyEncoder")
-        def build_my_encoder(config):
+        def build_my_encoder(config, keys):
             X = Input("X", shape=(None, config["hidden_size"]))
-            return [X], Linear("fc", n_in=config["hidden_size"], n_out=config["out_size"])(X)
+            fc = Linear("fc", n_in=config["hidden_size"], n_out=config["out_size"])
+            keys.bind(fc.W, "fc.weight", transform=channels_last)
+            return [X], fc(X)
     """
 
     def decorator(builder: Builder) -> Builder:
@@ -80,7 +84,9 @@ def register_builder(architecture: str) -> Callable[[Builder], Builder]:
     return decorator
 
 
-def build_from_config(config: dict) -> tuple[list[Variable], Variable | Sequence[Variable]]:
+def build_from_config(
+    config: dict,
+) -> tuple[list[Variable], Variable | list[Variable], KeyMap]:
     """
     Build the graph a HuggingFace config describes.
 
@@ -93,8 +99,10 @@ def build_from_config(config: dict) -> tuple[list[Variable], Variable | Sequence
     -------
     data_inputs : list of Variable
         The graph's data inputs.
-    outputs : Variable or sequence of Variable
+    outputs : Variable or list of Variable
         The graph the builder produced.
+    keys : KeyMap
+        The checkpoint key each parameter loads from, recorded as the builder ran.
     """
     architecture = architecture_name(config)
     if architecture is None:
@@ -108,4 +116,5 @@ def build_from_config(config: dict) -> tuple[list[Variable], Variable | Sequence
             f"No builder is registered for {architecture!r}. Registered architectures: "
             f"{sorted(_BUILDERS)}."
         )
-    return builder(config)
+    keys = KeyMap()
+    return (*builder(config, keys), keys)

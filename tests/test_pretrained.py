@@ -479,15 +479,18 @@ def test_registry_dispatches_on_the_declared_class(config, isolated_builder_regi
     name a builder registers under."""
 
     @register_builder("ToyEncoder")
-    def build_toy_encoder(cfg):
+    def build_toy_encoder(cfg, keys):
         X = pt.tensor("X", shape=(None, cfg["n_in"]))
-        return [X], Linear("fc", n_in=cfg["n_in"], n_out=cfg["n_out"])(X)
+        fc = Linear("fc", n_in=cfg["n_in"], n_out=cfg["n_out"])
+        keys.bind(fc.W, "fc.weight", transform=channels_last)
+        return [X], fc(X)
 
-    data_inputs, outputs = build_from_config(config)
+    data_inputs, outputs, keys = build_from_config(config)
 
     assert architecture_name(config) == "ToyEncoder"
     assert [variable.name for variable in data_inputs] == ["X"]
     assert outputs.type.shape == (None, 3)
+    assert keys.keys() == {"fc.weight"}
 
 
 def test_a_config_naming_no_architecture_raises():
@@ -504,13 +507,13 @@ def test_registering_an_architecture_twice_raises(isolated_builder_registry):
     """Import order would otherwise decide which builder answers, silently."""
 
     @register_builder("ToyEncoder")
-    def build_toy_encoder(cfg):
+    def build_toy_encoder(cfg, keys):
         raise AssertionError("not called")
 
     with pytest.raises(ValueError, match="already has a builder"):
 
         @register_builder("ToyEncoder")
-        def build_toy_encoder_again(cfg):
+        def build_toy_encoder_again(cfg, keys):
             raise AssertionError("not called")
 
 
