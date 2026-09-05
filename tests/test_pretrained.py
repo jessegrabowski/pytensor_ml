@@ -836,12 +836,14 @@ def _tiny_clip_tensors(config):
     _, _, keys = build_from_config(config)
     rng = np.random.default_rng(0)
     tensors = {}
+    # CLIP is written with nn.Linear, so every dense weight is stored channel-first and the
+    # checkpoint holds the parameter's transpose. Embeddings are 2-D too but are stored as built;
+    # norms and biases are 1-D.
+    stored_as_built = ("token_embedding.weight", "position_embedding.weight")
     for key in sorted(keys.keys()):
-        parameter = keys.parameter_for(key)
-        shape = parameter.get_value().shape
-        # Weights that carry a transform are stored channel-first, so the checkpoint shape is reversed.
-        stored = shape[::-1] if key.endswith("proj.weight") or "fc" in key else shape
-        tensors[key] = rng.normal(size=stored).astype("float16")
+        shape = keys.parameter_for(key).get_value().shape
+        transposed = len(shape) == 2 and not key.endswith(stored_as_built)
+        tensors[key] = rng.normal(size=shape[::-1] if transposed else shape).astype("float16")
     return tensors
 
 
