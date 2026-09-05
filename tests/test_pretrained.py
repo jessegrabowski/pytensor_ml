@@ -11,6 +11,8 @@ from pytensor.tensor.random.type import RandomGeneratorType, random_generator_ty
 from pytensor_ml.activations import ReLU
 from pytensor_ml.checkpoint import jsonable_rng_state
 from pytensor_ml.layers import BatchNorm, Dropout, Embedding, Linear, Sequential
+from pytensor_ml.models import architecture_name, build_from_config, register_builder
+from pytensor_ml.models.registry import _BUILDERS
 from pytensor_ml.params import NonTrainableParameter, TrainableParameter
 from pytensor_ml.pretrained import (
     _detect_format,
@@ -446,6 +448,64 @@ def test_a_fresh_generator_does_not_need_the_state_it_discards(tmp_path):
 
     _, restored = load_network(path, restore_rng=False)
     assert type(generator_of(restored).bit_generator).__name__ == "MT19937"
+
+
+@pytest.fixture
+def isolated_builder_registry():
+    """Undo any builder registration a test performs. The registry is module-level, so a leaked entry
+    would answer for every test that ran afterwards."""
+    registered = dict(_BUILDERS)
+    yield
+    _BUILDERS.clear()
+    _BUILDERS.update(registered)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"_class_name": "ToyEncoder", "n_in": 4, "n_out": 3},
+        {"model_type": "toy_encoder", "architectures": ["ToyEncoder"], "n_in": 4, "n_out": 3},
+    ],
+    ids=["diffusers", "transformers"],
+)
+def test_registry_dispatches_on_the_declared_class(config, isolated_builder_registry):
+    """Diffusers and transformers spell the architecture differently, and both resolve to the class
+    name a builder registers under."""
+
+    @register_builder("ToyEncoder")
+    def build_toy_encoder(cfg):
+        X = pt.tensor("X", shape=(None, cfg["n_in"]))
+        return [X], Linear("fc", n_in=cfg["n_in"], n_out=cfg["n_out"])(X)
+
+    data_inputs, outputs = build_from_config(config)
+
+    assert architecture_name(config) == "ToyEncoder"
+    assert [variable.name for variable in data_inputs] == ["X"]
+    assert outputs.type.shape == (None, 3)
+
+
+def test_a_config_naming_no_architecture_raises():
+    with pytest.raises(ValueError, match="names no architecture"):
+        build_from_config({"hidden_size": 8})
+
+
+def test_an_unregistered_architecture_raises():
+    with pytest.raises(ValueError, match="No builder is registered for 'NotARealModel'"):
+        build_from_config({"_class_name": "NotARealModel"})
+
+
+def test_registering_an_architecture_twice_raises(isolated_builder_registry):
+    """Import order would otherwise decide which builder answers, silently."""
+
+    @register_builder("ToyEncoder")
+    def build_toy_encoder(cfg):
+        raise AssertionError("not called")
+
+    with pytest.raises(ValueError, match="already has a builder"):
+
+        @register_builder("ToyEncoder")
+        def build_toy_encoder_again(cfg):
+            raise AssertionError("not called")
 
 
 @pytest.mark.parametrize(
