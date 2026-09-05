@@ -113,6 +113,13 @@ class KeyMap:
             raise KeyError(f"{parameter.name or parameter} was never bound to a checkpoint key.")
         return bound.key
 
+    def parameter_for(self, key: str) -> SharedVariable:
+        """Parameter the checkpoint key ``key`` loads into."""
+        parameter = self._by_key.get(key)
+        if parameter is None:
+            raise KeyError(f"No parameter is bound to {key!r}.")
+        return parameter
+
     def keys(self) -> set[str]:
         """Every checkpoint key the builder bound."""
         return set(self._by_key)
