@@ -5,6 +5,7 @@ from pytensor.tensor.variable import TensorVariable
 
 from pytensor_ml.activations import GELU, Activation, QuickGELU, ReLU
 from pytensor_ml.layers import Embedding, LayerNorm, Linear, TransformerBlock
+from pytensor_ml.models.binding import bind_layer_norm, bind_linear
 from pytensor_ml.models.keys import KeyMap, channels_last
 from pytensor_ml.models.registry import register_builder
 
@@ -146,11 +147,11 @@ def _build_text_transformer(
         with keys.scope("embeddings"):
             keys.bind(token_embedding.W, "token_embedding.weight")
             keys.bind(position_embedding.W, "position_embedding.weight")
-        _bind_layer_norm(keys, final_layer_norm, "final_layer_norm")
+        bind_layer_norm(keys, final_layer_norm, "final_layer_norm")
         with keys.scope("encoder", "layers"):
             for i, block in enumerate(blocks):
                 with keys.scope(str(i)):
-                    _bind_layer(keys, block)
+                    _bind_block(keys, block)
 
     # Positions come from the input's length rather than the checkpoint's position_ids buffer, which
     # is arange(n) and is surplus for that reason.
@@ -166,28 +167,18 @@ def _build_text_transformer(
     return ids, final, hidden_states
 
 
-def _bind_layer_norm(keys: KeyMap, norm: LayerNorm, *parts: str) -> None:
-    # CLIP's norms are affine, so scale and loc are built; the layer types them as optional because a
-    # norm without an affine transform owns neither.
-    assert norm.scale is not None and norm.loc is not None
-    keys.bind(norm.scale, *parts, "weight")
-    keys.bind(norm.loc, *parts, "bias")
+def _bind_block(keys: KeyMap, block: TransformerBlock) -> None:
+    # CLIP is written with nn.Linear, so every weight arrives channel-first.
+    bind_layer_norm(keys, block.norm1, "layer_norm1")
+    bind_layer_norm(keys, block.norm2, "layer_norm2")
 
-
-def _bind_layer(keys: KeyMap, block: TransformerBlock) -> None:
-    _bind_layer_norm(keys, block.norm1, "layer_norm1")
-    _bind_layer_norm(keys, block.norm2, "layer_norm2")
-
-    projections = [
+    for name, projection in [
         ("q_proj", block.attn.q_proj),
         ("k_proj", block.attn.k_proj),
         ("v_proj", block.attn.v_proj),
         ("out_proj", block.attn.out_proj),
-    ]
-    for name, projection in projections:
-        keys.bind(projection.W, "self_attn", name, "weight", transform=channels_last)
-        keys.bind(projection.b, "self_attn", name, "bias")
+    ]:
+        bind_linear(keys, projection, "self_attn", name, transform=channels_last)
 
-    for name, linear in [("fc1", block.ff.fc_in), ("fc2", block.ff.fc_out)]:
-        keys.bind(linear.W, "mlp", name, "weight", transform=channels_last)
-        keys.bind(linear.b, "mlp", name, "bias")
+    bind_linear(keys, block.ff.fc_in, "mlp", "fc1", transform=channels_last)
+    bind_linear(keys, block.ff.fc_out, "mlp", "fc2", transform=channels_last)
