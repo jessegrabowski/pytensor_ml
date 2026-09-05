@@ -8,6 +8,7 @@ import pytest
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor.random.type import RandomGeneratorType, random_generator_type
+from safetensors.numpy import save_file
 
 from pytensor_ml.activations import ReLU
 from pytensor_ml.checkpoint import jsonable_rng_state
@@ -97,10 +98,12 @@ def test_load_network_restores_trainable_params_holding_a_draw(tmp_path):
         np.testing.assert_array_equal(params[name].get_value(), 0)
 
 
-def test_from_pretrained_rejects_huggingface_directory(tmp_path):
+def test_from_pretrained_rejects_an_architecture_with_no_builder(tmp_path):
     # A HuggingFace config shares our filenames but is a hyperparameter sheet; auto-detect must not misparse.
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "bert", "hidden_size": 768}))
-    with pytest.raises(NotImplementedError, match="HuggingFace"):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "bert", "architectures": ["BertModel"], "hidden_size": 768})
+    )
+    with pytest.raises(ValueError, match="No builder is registered for 'BertModel'"):
         from_pretrained(tmp_path)
 
 
@@ -818,3 +821,67 @@ def test_clip_pools_at_the_end_of_stream_token(eos_token_id, ids, expected_posit
     np.testing.assert_allclose(
         pooled_output[0], final[0, expected_position] @ projection, rtol=1e-5, atol=1e-5
     )
+
+
+def _write_huggingface_component(directory, config, tensors, filename):
+    """A HuggingFace component directory: a config and one safetensors file."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text(json.dumps(config))
+    save_file({key: np.asarray(value) for key, value in tensors.items()}, directory / filename)
+    return directory
+
+
+def _tiny_clip_tensors(config):
+    """Checkpoint tensors matching TINY_CLIP, shaped as HuggingFace stores them."""
+    _, _, keys = build_from_config(config)
+    rng = np.random.default_rng(0)
+    tensors = {}
+    for key in sorted(keys.keys()):
+        parameter = keys.parameter_for(key)
+        shape = parameter.get_value().shape
+        # Weights that carry a transform are stored channel-first, so the checkpoint shape is reversed.
+        stored = shape[::-1] if key.endswith("proj.weight") or "fc" in key else shape
+        tensors[key] = rng.normal(size=stored).astype("float16")
+    return tensors
+
+
+def test_from_pretrained_builds_and_loads_a_huggingface_directory(tmp_path):
+    config = {**TINY_CLIP}
+    component = _write_huggingface_component(
+        tmp_path / "text_encoder", config, _tiny_clip_tensors(config), "model.safetensors"
+    )
+
+    inputs, outputs = from_pretrained(component)
+
+    assert [variable.name for variable in inputs] == ["input_ids"]
+    assert outputs[0].name == "last_hidden_state"
+    result = pytensor.function(inputs, outputs[0])(np.zeros((2, 5), dtype="int32"))
+    assert result.shape == (2, 5, config["hidden_size"])
+    assert np.isfinite(result).all()
+
+
+def test_from_pretrained_needs_a_variant_when_several_weight_files_exist(tmp_path):
+    config = {**TINY_CLIP}
+    tensors = _tiny_clip_tensors(config)
+    component = _write_huggingface_component(
+        tmp_path / "text_encoder", config, tensors, "model.safetensors"
+    )
+    save_file(
+        {key: np.asarray(value) for key, value in tensors.items()},
+        component / "model.fp16.safetensors",
+    )
+
+    with pytest.raises(ValueError, match="several weight files"):
+        from_pretrained(component)
+
+    inputs, outputs = from_pretrained(component, variant="fp16")
+    assert outputs[0].name == "last_hidden_state"
+
+
+def test_from_pretrained_reports_a_directory_with_no_safetensors(tmp_path):
+    component = tmp_path / "text_encoder"
+    component.mkdir()
+    (component / "config.json").write_text(json.dumps(TINY_CLIP))
+
+    with pytest.raises(FileNotFoundError, match=r"No \.safetensors weights"):
+        from_pretrained(component)

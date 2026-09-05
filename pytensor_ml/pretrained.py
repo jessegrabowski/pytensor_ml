@@ -11,6 +11,7 @@ import pytensor
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.basic import Variable
 from pytensor.tensor.random.type import RandomGeneratorType
+from safetensors import safe_open
 
 from pytensor_ml.checkpoint import (
     bit_generator_kind,
@@ -29,6 +30,7 @@ from pytensor_ml.json_serialize import (
     serialize_graph,
     type_from_json,
 )
+from pytensor_ml.models import build_from_config
 from pytensor_ml.params import NonTrainableParameter, TrainableParameter, non_trainable, trainable
 from pytensor_ml.pytensorf import (
     as_output_list,
@@ -62,6 +64,34 @@ def _looks_like_huggingface(config: dict) -> bool:
     # Diffusers writes _class_name; transformers writes model_type and architectures. A directory with
     # any of them is somebody else's checkpoint rather than one of ours.
     return any(key in config for key in ("_class_name", "model_type", "architectures"))
+
+
+def _huggingface_weights(directory: Path, variant: str | None) -> Path:
+    """
+    The safetensors file in a HuggingFace component directory.
+
+    The name varies by toolchain and precision -- transformers writes ``model.safetensors``, diffusers
+    writes ``diffusion_pytorch_model.safetensors``, and a half-precision download inserts a variant
+    before the extension -- so it is resolved rather than assumed.
+    """
+    candidates = sorted(directory.glob("*.safetensors"))
+    if variant is not None:
+        candidates = [path for path in candidates if path.suffixes[:-1] == [f".{variant}"]]
+        if not candidates:
+            raise FileNotFoundError(f"No *.{variant}.safetensors in {directory}.")
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No .safetensors weights in {directory}. Only safetensors is read; a .bin checkpoint "
+            f"has to be converted first."
+        )
+    if len(candidates) > 1:
+        names = ", ".join(path.name for path in candidates)
+        raise ValueError(
+            f"{directory} holds several weight files ({names}), so which to load is ambiguous. Pass "
+            f"variant= to choose one."
+        )
+    return candidates[0]
 
 
 def _detect_format(config: dict) -> Format:
@@ -360,7 +390,11 @@ def save_pretrained(
 
 
 def from_pretrained(
-    directory: str | Path, source_format: Format = "auto", *, restore_rng: bool = False
+    directory: str | Path,
+    source_format: Format = "auto",
+    *,
+    restore_rng: bool = False,
+    variant: str | None = None,
 ) -> tuple[list[Variable], Variable | list[Variable]]:
     """
     Load a complete network -- architecture and weights -- from a directory.
@@ -369,6 +403,11 @@ def from_pretrained(
     ``model.safetensors``. The format is detected from the config by default, since a pytensor_ml graph and
     a HuggingFace model share the same filenames but not the same schema.
 
+    For a HuggingFace directory, dispatches the config to a registered builder and fills the graph it
+    returns from the component's safetensors file. Each weight casts to its parameter's dtype, which
+    ``floatX`` fixed when the layer built it. A checkpoint tensor no parameter loads from is logged
+    rather than treated as an error, since every parameter still got a value.
+
     Parameters
     ----------
     directory : str or pathlib.Path
@@ -376,7 +415,11 @@ def from_pretrained(
     source_format : {'auto', 'pytensor', 'huggingface'}
         Which loader to use. ``'auto'`` detects the format from the config's marker. Default 'auto'.
     restore_rng : bool
-        If True, restore each random generator to its saved state for exact reproducibility. Default False.
+        If True, restore each random generator to its saved state for exact reproducibility. Only a
+        pytensor_ml directory carries generator state. Default False.
+    variant : str, optional
+        Picks between weight files when a directory holds several, as in ``model.fp16.safetensors``.
+        Unnecessary when there is only one.
 
     Returns
     -------
@@ -411,9 +454,11 @@ def from_pretrained(
     if source_format == "auto":
         source_format = _detect_format(json.loads((directory / CONFIG_FILENAME).read_text()))
     if source_format == "huggingface":
-        raise NotImplementedError(
-            "Loading HuggingFace models is not yet supported; pass a pytensor_ml directory."
-        )
+        config = json.loads((directory / CONFIG_FILENAME).read_text())
+        data_inputs, outputs, keys = build_from_config(config)
+        with safe_open(_huggingface_weights(directory, variant), framework="numpy") as weights:
+            keys.load(weights.get_tensor, weights.keys())
+        return data_inputs, outputs
 
     data_inputs, outputs = load_network(directory / CONFIG_FILENAME, restore_rng=restore_rng)
     load_state(_weight_variables(outputs), directory / WEIGHTS_FILENAME)
