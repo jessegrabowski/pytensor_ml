@@ -27,6 +27,17 @@ class FeedForward(Layer):
     where :math:`\phi` is the activation. This is the per-token MLP used in transformer blocks, but it is
     a standalone layer usable anywhere a widening-then-narrowing MLP is wanted.
 
+    Gated, the first projection is twice as wide and its halves multiply rather than one passing
+    through the activation:
+
+    .. math::
+
+        \mathrm{FFN}(x) = \left(a \odot \phi(g)\right) W_2 + b_2, \qquad
+        \left[a, g\right] = x W_1 + b_1.
+
+    That is GEGLU with :class:`~pytensor_ml.activations.GELU` and SwiGLU with
+    :class:`~pytensor_ml.activations.Swish`.
+
     Parameters
     ----------
     name : str or None
@@ -40,6 +51,9 @@ class FeedForward(Layer):
         Hidden-to-model dimension ratio used when ``hidden_dim`` is not given. Default is 4.
     activation : Activation, optional
         Activation applied to the hidden layer. Default is :class:`GELU`.
+    gated : bool, optional
+        Widen the first projection to :math:`2 d_{hidden}` and gate one half of it by the activation
+        applied to the other. The widened projection stays one weight. Default is False.
     bias : bool, optional
         Include bias terms in both linear layers. Default is True.
     fc_out_initializer : Initializer, optional
@@ -68,6 +82,7 @@ class FeedForward(Layer):
         hidden_dim: int | None = None,
         mlp_ratio: int = 4,
         activation: Activation | None = None,
+        gated: bool = False,
         bias: bool = True,
         fc_out_initializer: Initializer | None = None,
     ):
@@ -75,8 +90,14 @@ class FeedForward(Layer):
         self.d_model = d_model
         self.hidden_dim = hidden_dim if hidden_dim is not None else mlp_ratio * d_model
         self.activation = activation if activation is not None else GELU()
+        self.gated = gated
 
-        self.fc_in = Linear(f"{self.name}_fc_in", n_in=d_model, n_out=self.hidden_dim, bias=bias)
+        self.fc_in = Linear(
+            f"{self.name}_fc_in",
+            n_in=d_model,
+            n_out=2 * self.hidden_dim if gated else self.hidden_dim,
+            bias=bias,
+        )
         self.fc_out = Linear(
             f"{self.name}_fc_out",
             n_in=self.hidden_dim,
@@ -87,7 +108,13 @@ class FeedForward(Layer):
 
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         x = pt.as_tensor(x)
-        hidden = self.activation(self.fc_in(x))
+        projected = self.fc_in(x)
+        if self.gated:
+            value, gate = pt.split(projected, [self.hidden_dim] * 2, axis=-1)
+            hidden = value * self.activation(gate)
+        else:
+            hidden = self.activation(projected)
+
         out = self.fc_out(hidden)
         out.name = f"{self.name}_output"
         return out
