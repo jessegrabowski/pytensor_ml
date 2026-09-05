@@ -1,5 +1,6 @@
 # Import from the submodule, never the package: this file runs first, so the package is still incomplete.
 import pytensor_ml.models.clip  # registers the CLIP builders
+import pytensor_ml.models.gpt2  # registers the GPT-2 builder
 
 from pytensor_ml.models.keys import KeyMap, channels_last
 from pytensor_ml.models.registry import (

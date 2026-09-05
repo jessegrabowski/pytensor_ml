@@ -887,3 +887,68 @@ def test_from_pretrained_reports_a_directory_with_no_safetensors(tmp_path):
 
     with pytest.raises(FileNotFoundError, match=r"No \.safetensors weights"):
         from_pretrained(component)
+
+
+TINY_GPT2 = {
+    "architectures": ["GPT2LMHeadModel"],
+    "n_embd": 8,
+    "n_head": 2,
+    "n_layer": 2,
+    "n_positions": 16,
+    "vocab_size": 20,
+    "activation_function": "gelu_new",
+    "layer_norm_epsilon": 1e-5,
+    "n_inner": None,
+}
+
+
+def test_gpt2_builder_binds_one_key_for_the_fused_attention():
+    """GPT-2 stores q, k and v in a single c_attn tensor, so the graph must own one weight there
+    rather than three. Its Conv1D already stores (in, out), so nothing transposes."""
+    _, _, keys = build_from_config(TINY_GPT2)
+
+    per_layer = [
+        "ln_1.weight",
+        "ln_1.bias",
+        "ln_2.weight",
+        "ln_2.bias",
+        "attn.c_attn.weight",
+        "attn.c_attn.bias",
+        "attn.c_proj.weight",
+        "attn.c_proj.bias",
+        "mlp.c_fc.weight",
+        "mlp.c_fc.bias",
+        "mlp.c_proj.weight",
+        "mlp.c_proj.bias",
+    ]
+    assert keys.keys() == {
+        "wte.weight",
+        "wpe.weight",
+        "ln_f.weight",
+        "ln_f.bias",
+        *(f"h.{i}.{name}" for i in range(2) for name in per_layer),
+    }
+    assert keys.parameter_for("h.0.attn.c_attn.weight").get_value().shape == (8, 24)
+
+
+def test_gpt2_builder_ties_the_head_to_the_token_embedding():
+    """The checkpoint carries no lm_head weight, so the head has to reuse wte rather than bind a
+    parameter the file cannot fill."""
+    inputs, outputs, keys = build_from_config(TINY_GPT2)
+    assert not any("lm_head" in key for key in keys.keys())
+
+    rng = np.random.default_rng(0)
+    for parameter in collect_trainable_params(outputs[0]):
+        parameter.set_value(rng.normal(size=parameter.get_value().shape))
+
+    logits, final = pytensor.function(inputs, [outputs[0], outputs[1]])(
+        np.array([[1, 2, 3]], dtype="int32")
+    )
+    token_embedding = keys.parameter_for("wte.weight").get_value()
+
+    np.testing.assert_allclose(logits, final @ token_embedding.T, rtol=1e-5, atol=1e-5)
+
+
+def test_gpt2_builder_rejects_an_unknown_activation():
+    with pytest.raises(ValueError, match="activation_function is 'swiglu'"):
+        build_from_config({**TINY_GPT2, "activation_function": "swiglu"})
