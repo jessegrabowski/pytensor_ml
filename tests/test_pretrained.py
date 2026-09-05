@@ -13,6 +13,7 @@ from pytensor_ml.checkpoint import jsonable_rng_state
 from pytensor_ml.layers import BatchNorm, Dropout, Embedding, Linear, Sequential
 from pytensor_ml.params import NonTrainableParameter, TrainableParameter
 from pytensor_ml.pretrained import (
+    _detect_format,
     from_pretrained,
     load_network,
     save_network,
@@ -445,3 +446,17 @@ def test_a_fresh_generator_does_not_need_the_state_it_discards(tmp_path):
 
     _, restored = load_network(path, restore_rng=False)
     assert type(generator_of(restored).bit_generator).__name__ == "MT19937"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"_class_name": "AutoencoderKL"},
+        {"model_type": "clip_text_model", "architectures": ["CLIPTextModel"]},
+    ],
+    ids=["diffusers", "transformers"],
+)
+def test_a_foreign_config_is_detected_as_huggingface(config):
+    """Diffusers configs carry only _class_name, so a detector keyed on transformers' spellings
+    rejects the components this loads."""
+    assert _detect_format(config) == "huggingface"

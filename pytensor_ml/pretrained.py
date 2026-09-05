@@ -59,7 +59,9 @@ class InputKind(StrEnum):
 
 
 def _looks_like_huggingface(config: dict) -> bool:
-    return "model_type" in config or "architectures" in config
+    # Diffusers writes _class_name; transformers writes model_type and architectures. A directory with
+    # any of them is somebody else's checkpoint rather than one of ours.
+    return any(key in config for key in ("_class_name", "model_type", "architectures"))
 
 
 def _detect_format(config: dict) -> Format:
