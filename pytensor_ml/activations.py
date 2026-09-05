@@ -151,7 +151,7 @@ class Tanh(Activation):
 
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         out = pt.tanh(x)
-        out.name = "TanH"
+        out.name = "Tanh"
         return out
 
 
@@ -319,8 +319,34 @@ class Swish(Activation):
     def __call__(self, x: pt.TensorLike) -> pt.TensorVariable:
         x = pt.as_tensor(x)
         out = x * pt.sigmoid(_constant_like(self.beta, x) * x)
-        out.name = "Swish"
+        out.name = type(self).__name__
         return out
+
+
+class QuickGELU(Swish):
+    r"""
+    Sigmoid approximation to GELU.
+
+    Compute :math:`\mathrm{QuickGELU}(x) = x \, \sigma(1.702 x)`, which is exactly :class:`Swish`
+    at :math:`\beta = 1.702`. Every OpenAI CLIP checkpoint was trained with it, and loading those
+    weights under :class:`GELU` gives quietly wrong activations rather than an error. Prefer
+    :class:`GELU` for anything new.
+
+    Examples
+    --------
+    Use it where a checkpoint was trained with it, such as a CLIP text encoder's MLP:
+
+    .. code-block:: python
+
+        from pytensor_ml.activations import QuickGELU
+        from pytensor_ml.layers import FeedForward, Input
+
+        X = Input("X", shape=(None, 77, 768))
+        activations = FeedForward("mlp", d_model=768, activation=QuickGELU())(X)
+    """
+
+    def __init__(self):
+        super().__init__(beta=1.702)
 
 
 class Softmax(Activation):
