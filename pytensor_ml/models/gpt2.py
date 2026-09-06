@@ -9,6 +9,14 @@ from pytensor_ml.models.binding import bind_layer_norm, bind_linear
 from pytensor_ml.models.keys import KeyMap
 from pytensor_ml.models.registry import register_builder
 
+# Config flags that alter the attention arithmetic. A checkpoint setting one differently would load
+# cleanly and return wrong numbers, which is the failure KeyMap.load refuses for weights.
+_ASSUMED_CONFIG = {
+    "scale_attn_weights": True,
+    "scale_attn_by_inverse_layer_idx": False,
+    "reorder_and_upcast_attn": False,
+}
+
 _ACTIVATIONS: dict[str, Activation] = {
     "gelu_new": GELU(approximate=True),
     "gelu": GELU(approximate=False),
@@ -51,6 +59,13 @@ def build_gpt2(config: dict, keys: KeyMap) -> tuple[list[Variable], list[Variabl
             f"GPT-2's n_inner ({hidden_dim}) is not a whole multiple of n_embd ({width}), which "
             f"TransformerBlock cannot express."
         )
+
+    for key, assumed in _ASSUMED_CONFIG.items():
+        if config.get(key, assumed) != assumed:
+            raise ValueError(
+                f"GPT-2's {key} is {config[key]!r}, which changes the attention arithmetic and is "
+                f"not implemented here. Loading anyway would give a wrong model that runs."
+            )
 
     ids = pt.matrix("input_ids", dtype="int64")
 

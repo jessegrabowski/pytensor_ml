@@ -1015,6 +1015,21 @@ def test_a_sequence_longer_than_the_position_table_raises(config):
     assert predict(np.zeros((1, 16), dtype="int64")).shape[1] == 16
 
 
+@pytest.mark.parametrize(
+    "flag, value",
+    [
+        ("scale_attn_weights", False),
+        ("scale_attn_by_inverse_layer_idx", True),
+        ("reorder_and_upcast_attn", True),
+    ],
+)
+def test_gpt2_builder_rejects_a_config_that_changes_the_attention_arithmetic(flag, value):
+    """These flags load cleanly and return wrong numbers, which is the one failure the key map cannot
+    catch for itself."""
+    with pytest.raises(ValueError, match=flag):
+        build_from_config({**TINY_GPT2, flag: value})
+
+
 def test_a_sharded_checkpoint_is_reported_rather_than_partly_loaded(tmp_path):
     """One shard of a sharded checkpoint would fill some parameters and leave the rest at their
     initialization."""
