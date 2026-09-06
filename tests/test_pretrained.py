@@ -880,10 +880,15 @@ def test_the_clip_builder_binds_exactly_what_a_checkpoint_holds():
 
     assert keys.keys() == set(TINY_CLIP_CHECKPOINT)
     for key, checkpoint_shape in TINY_CLIP_CHECKPOINT.items():
-        parameter = keys.parameter_for(key).get_value().shape
-        expected = checkpoint_shape[::-1] if len(checkpoint_shape) == 2 else checkpoint_shape
-        transposed = expected if key.endswith("_proj.weight") or ".fc" in key else checkpoint_shape
-        assert parameter == transposed, key
+        # nn.Linear stores a dense weight channel-first, so every 2-D tensor but the two embedding
+        # tables is the parameter's transpose.
+        stored_as_built = key.endswith(("token_embedding.weight", "position_embedding.weight"))
+        expected = (
+            checkpoint_shape[::-1]
+            if len(checkpoint_shape) == 2 and not stored_as_built
+            else checkpoint_shape
+        )
+        assert keys.parameter_for(key).get_value().shape == expected, key
 
 
 def test_from_pretrained_builds_and_loads_a_huggingface_directory(tmp_path):

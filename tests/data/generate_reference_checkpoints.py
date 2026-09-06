@@ -1,12 +1,9 @@
-"""Regenerate the committed reference checkpoints.
-
-Run in an environment holding torch and transformers::
-
-    python tests/data/generate_reference_checkpoints.py
-
-Each architecture gets a directory holding the config and weights HuggingFace itself writes, plus the
-outputs transformers computes from them, so the parity test needs neither library installed.
-"""
+# Regenerate the committed reference checkpoints, in an environment holding torch and transformers:
+#
+#     python tests/data/generate_reference_checkpoints.py
+#
+# Each architecture gets a directory holding the config and weights HuggingFace itself writes, plus the
+# outputs transformers computes from them, so the parity test needs neither library installed.
 
 from pathlib import Path
 

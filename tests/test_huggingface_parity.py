@@ -9,13 +9,6 @@ from pytensor_ml.pretrained import from_pretrained
 DATA = Path(__file__).parent / "data"
 
 
-def load_reference(name):
-    """A checkpoint transformers wrote, with the outputs it computed from it."""
-    directory = DATA / name
-    expected = np.load(directory / "expected_outputs.npz")
-    return directory, expected["input_ids"], expected
-
-
 @pytest.mark.parametrize(
     "name, wanted",
     [
@@ -28,10 +21,13 @@ def test_a_loaded_model_computes_what_transformers_computes(name, wanted):
     """Every binding, transpose and layer in these builders can be individually plausible and still
     produce a different model, and only the numbers say otherwise. The checkpoints under tests/data
     are the files HuggingFace itself writes -- see the script beside them to regenerate."""
-    directory, ids, expected = load_reference(name)
+    directory = DATA / name
+    expected = np.load(directory / "expected_outputs.npz")
 
     inputs, outputs = from_pretrained(directory)
-    computed = pytensor.function(inputs, [outputs[index] for index in wanted.values()])(ids)
+    computed = pytensor.function(inputs, [outputs[index] for index in wanted.values()])(
+        expected["input_ids"]
+    )
 
-    for (key, _), result in zip(wanted.items(), computed):
+    for key, result in zip(wanted, computed, strict=True):
         np.testing.assert_allclose(result, expected[key], rtol=1e-4, atol=1e-5, err_msg=key)
