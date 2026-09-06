@@ -141,7 +141,7 @@ class KeyMap:
             return {key: key for key in bound}
 
         leading = {key.split(".", 1)[0] for key in bound}
-        for prefix in {key.split(".", 1)[0] for key in checkpoint} - leading:
+        for prefix in sorted({key.split(".", 1)[0] for key in checkpoint} - leading):
             renamed = {key: f"{prefix}.{key}" for key in bound}
             if set(renamed.values()) <= checkpoint:
                 return renamed
