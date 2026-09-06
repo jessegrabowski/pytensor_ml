@@ -1,6 +1,7 @@
 import pytensor.tensor as pt
 
 from pytensor.graph.basic import Variable
+from pytensor.raise_op import Assert
 from pytensor.tensor.variable import TensorVariable
 
 from pytensor_ml.activations import GELU, Activation, QuickGELU, ReLU
@@ -119,7 +120,7 @@ def _build_text_transformer(
             f"hidden_size ({width}), which TransformerBlock cannot express."
         )
 
-    ids = pt.matrix("input_ids", dtype="int32")
+    ids = pt.matrix("input_ids", dtype="int64")
 
     token_embedding = Embedding(
         "token_embedding", n_embeddings=config["vocab_size"], n_features=width
@@ -154,8 +155,13 @@ def _build_text_transformer(
                     _bind_block(keys, block)
 
     # Positions come from the input's length rather than the checkpoint's position_ids buffer, which
-    # is arange(n) and is surplus for that reason.
-    hidden = token_embedding(ids) + position_embedding(pt.arange(ids.shape[1]))
+    # is arange(n) and is surplus for that reason. Past the table the gather reads out of bounds and
+    # returns whatever memory it finds, so the length is checked rather than trusted.
+    n_positions = Assert(
+        f"input_ids is longer than the {config['max_position_embeddings']} positions this checkpoint "
+        f"was trained with."
+    )(ids.shape[1], ids.shape[1] <= config["max_position_embeddings"])
+    hidden = token_embedding(ids) + position_embedding(pt.arange(n_positions))
 
     hidden_states = []
     for block in blocks:

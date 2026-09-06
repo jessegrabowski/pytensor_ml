@@ -993,6 +993,28 @@ def test_gpt2_builder_rejects_an_unknown_activation():
         build_from_config({**TINY_GPT2, "activation_function": "swiglu"})
 
 
+@pytest.mark.parametrize("config", [TINY_CLIP, TINY_GPT2], ids=["clip", "gpt2"])
+def test_a_token_id_input_is_an_integer_matrix(config):
+    """Token ids index the embedding table, and pt.matrix defaults to floatX, so the dtype has to be
+    asked for rather than inherited."""
+    inputs, _, _ = build_from_config(config)
+
+    assert inputs[0].type.dtype == "int64"
+
+
+@pytest.mark.parametrize("config", [TINY_CLIP, TINY_GPT2], ids=["clip", "gpt2"])
+def test_a_sequence_longer_than_the_position_table_raises(config):
+    """Past the table the position gather reads out of bounds and returns whatever memory it finds,
+    which is a wrong model that runs."""
+    inputs, outputs, _ = build_from_config(config)
+    predict = pytensor.function(inputs, outputs[0])
+
+    with pytest.raises(AssertionError, match="longer than the 16 positions"):
+        predict(np.zeros((1, 17), dtype="int64"))
+
+    assert predict(np.zeros((1, 16), dtype="int64")).shape[1] == 16
+
+
 def test_a_sharded_checkpoint_is_reported_rather_than_partly_loaded(tmp_path):
     """One shard of a sharded checkpoint would fill some parameters and leave the rest at their
     initialization."""

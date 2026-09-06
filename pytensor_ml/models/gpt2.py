@@ -1,6 +1,7 @@
 import pytensor.tensor as pt
 
 from pytensor.graph.basic import Variable
+from pytensor.raise_op import Assert
 
 from pytensor_ml.activations import GELU, Activation, ReLU
 from pytensor_ml.layers import Embedding, LayerNorm, TransformerBlock
@@ -51,7 +52,7 @@ def build_gpt2(config: dict, keys: KeyMap) -> tuple[list[Variable], list[Variabl
             f"TransformerBlock cannot express."
         )
 
-    ids = pt.matrix("input_ids", dtype="int32")
+    ids = pt.matrix("input_ids", dtype="int64")
 
     token_embedding = Embedding("wte", n_embeddings=config["vocab_size"], n_features=width)
     position_embedding = Embedding("wpe", n_embeddings=config["n_positions"], n_features=width)
@@ -78,7 +79,13 @@ def build_gpt2(config: dict, keys: KeyMap) -> tuple[list[Variable], list[Variabl
             with keys.scope(str(i)):
                 _bind_block(keys, block)
 
-    hidden = token_embedding(ids) + position_embedding(pt.arange(ids.shape[1]))
+    # Past the position table the gather reads out of bounds and returns whatever memory it finds,
+    # so the length is checked rather than trusted.
+    n_positions = Assert(
+        f"input_ids is longer than the {config['n_positions']} positions this checkpoint was "
+        f"trained with."
+    )(ids.shape[1], ids.shape[1] <= config["n_positions"])
+    hidden = token_embedding(ids) + position_embedding(pt.arange(n_positions))
 
     hidden_states = []
     for block in blocks:
