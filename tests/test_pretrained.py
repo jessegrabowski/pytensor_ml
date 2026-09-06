@@ -1005,3 +1005,12 @@ def test_a_sharded_checkpoint_is_reported_rather_than_partly_loaded(tmp_path):
 
     with pytest.raises(NotImplementedError, match="sharded checkpoint"):
         from_pretrained(component)
+
+
+def test_from_pretrained_rejects_restore_rng_for_a_huggingface_directory(tmp_path):
+    component = _write_huggingface_component(
+        tmp_path / "text_encoder", TINY_CLIP, _tiny_clip_tensors(), "model.safetensors"
+    )
+
+    with pytest.raises(ValueError, match="restore_rng"):
+        from_pretrained(component, restore_rng=True)

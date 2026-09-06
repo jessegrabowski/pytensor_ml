@@ -464,6 +464,11 @@ def from_pretrained(
     if source_format == "auto":
         source_format = _detect_format(json.loads((directory / CONFIG_FILENAME).read_text()))
     if source_format == "huggingface":
+        if restore_rng:
+            raise ValueError(
+                "restore_rng restores a pytensor_ml graph's saved generator state, and a HuggingFace "
+                "checkpoint carries none."
+            )
         config = json.loads((directory / CONFIG_FILENAME).read_text())
         data_inputs, outputs, keys = build_from_config(config)
         with safe_open(_huggingface_weights(directory, variant), framework="numpy") as weights:
