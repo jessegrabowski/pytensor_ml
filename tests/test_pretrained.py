@@ -1054,6 +1054,20 @@ def test_from_pretrained_rejects_restore_rng_for_a_huggingface_directory(tmp_pat
         from_pretrained(component, restore_rng=True)
 
 
+def test_load_reports_a_dtype_numpy_cannot_read():
+    """safetensors raises a bare TypeError for bfloat16, which says nothing about what to do next."""
+    keys = KeyMap()
+    linear = Linear("fc", n_in=2, n_out=2)
+    keys.bind(linear.W, "fc.weight")
+    keys.bind(linear.b, "fc.bias")
+
+    def read(key):
+        raise TypeError("unsupported dtype BF16")
+
+    with pytest.raises(TypeError, match="Re-save the checkpoint"):
+        keys.load(read, ["fc.weight", "fc.bias"])
+
+
 def test_bind_linear_binds_no_bias_for_a_bias_free_layer():
     """CLIP's text projection has no bias, and binding one would ask the checkpoint for a tensor it
     does not hold."""

@@ -135,9 +135,10 @@ class KeyMap:
         of the whole checkpoint. Each is cast to its parameter's dtype, which the layer fixed from
         ``floatX`` when it built it and loading cannot change.
 
-        A bound parameter the checkpoint cannot fill raises, before anything is stored -- it would
+        A bound parameter the checkpoint cannot fill raises before anything is stored -- it would
         otherwise keep its initialization, giving a wrong model that runs. A checkpoint tensor no
-        parameter wants is returned instead, since every parameter still got a value.
+        parameter wants is returned instead, since every parameter still got a value. A tensor whose
+        shape is wrong raises mid-load, leaving the parameters before it filled.
 
         Parameters
         ----------
@@ -164,7 +165,14 @@ class KeyMap:
             )
 
         for parameter, (key, transform) in self._bindings.items():
-            array = read(key)
+            try:
+                array = read(key)
+            except TypeError as error:
+                raise TypeError(
+                    f"{key!r} is stored in a dtype numpy cannot read ({error}). Re-save the "
+                    f"checkpoint as float16 or float32."
+                ) from error
+
             if transform is not None:
                 array = transform(array)
 
@@ -175,7 +183,7 @@ class KeyMap:
                     f"A transform is missing or wrong -- a square kernel transposed the wrong way has "
                     f"the right shape and the wrong numbers, so this check is the only one that fires."
                 )
-            parameter.set_value(array.astype(parameter.type.dtype))
+            parameter.set_value(array.astype(parameter.type.dtype, copy=False), borrow=True)
 
         surplus = sorted(checkpoint - bound)
         if surplus:
