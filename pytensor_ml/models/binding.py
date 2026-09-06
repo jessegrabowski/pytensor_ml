@@ -14,7 +14,7 @@ def bind_linear(
     keys: KeyMap, linear: Linear | None, *parts: str, transform: Transform | None = None
 ) -> None:
     """
-    Bind a dense layer's weight and bias.
+    Bind a dense layer's weight, and its bias when it has one.
 
     Pass :func:`~pytensor_ml.models.keys.channels_last` for a checkpoint written with ``nn.Linear``,
     which stores ``(out, in)``. Omit it for one written with HuggingFace's ``Conv1D``, which already
@@ -24,4 +24,5 @@ def bind_linear(
     # in their place.
     assert linear is not None
     keys.bind(linear.W, *parts, "weight", transform=transform)
-    keys.bind(linear.b, *parts, "bias")
+    if linear.bias:
+        keys.bind(linear.b, *parts, "bias")

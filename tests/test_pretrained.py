@@ -16,6 +16,7 @@ from pytensor_ml.layers import BatchNorm, Dropout, Embedding, Linear, Sequential
 from pytensor_ml.models import (
     KeyMap,
     architecture_name,
+    bind_linear,
     build_from_config,
     channels_last,
     register_builder,
@@ -1014,3 +1015,12 @@ def test_from_pretrained_rejects_restore_rng_for_a_huggingface_directory(tmp_pat
 
     with pytest.raises(ValueError, match="restore_rng"):
         from_pretrained(component, restore_rng=True)
+
+
+def test_bind_linear_binds_no_bias_for_a_bias_free_layer():
+    """CLIP's text projection has no bias, and binding one would ask the checkpoint for a tensor it
+    does not hold."""
+    keys = KeyMap()
+    bind_linear(keys, Linear("text_projection", n_in=4, n_out=2, bias=False), "text_projection")
+
+    assert keys.keys() == {"text_projection.weight"}
