@@ -1075,3 +1075,24 @@ def test_bind_linear_binds_no_bias_for_a_bias_free_layer():
     bind_linear(keys, Linear("text_projection", n_in=4, n_out=2, bias=False), "text_projection")
 
     assert keys.keys() == {"text_projection.weight"}
+
+
+@pytest.mark.parametrize(
+    "checkpoint_prefix",
+    ["", "transformer."],
+    ids=["published", "saved_from_the_head_class"],
+)
+def test_load_matches_a_checkpoint_that_adds_or_drops_the_model_prefix(checkpoint_prefix):
+    """Whether the leading segment is there depends on the class the checkpoint was saved from, and
+    the published files invert what transformers writes today."""
+    keys = KeyMap()
+    linear = Linear("fc", n_in=2, n_out=2)
+    keys.bind(linear.W, "h.0.weight")
+    keys.bind(linear.b, "h.0.bias")
+    checkpoint = {
+        f"{checkpoint_prefix}h.0.weight": np.ones((2, 2)),
+        f"{checkpoint_prefix}h.0.bias": np.full(2, 3.0),
+    }
+
+    assert keys.load(checkpoint.__getitem__, checkpoint) == []
+    np.testing.assert_array_equal(linear.b.get_value(), 3.0)

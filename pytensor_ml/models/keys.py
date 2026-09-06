@@ -127,6 +127,33 @@ class KeyMap:
     def __len__(self) -> int:
         return len(self._bindings)
 
+    def _checkpoint_names(self, checkpoint: set[str]) -> dict[str, str]:
+        """
+        Every bound key paired with the name the checkpoint gives it.
+
+        Whether a checkpoint carries the model's own leading segment depends on the class it was
+        saved from: transformers drops it for a bare ``CLIPTextModel`` and keeps it for a
+        ``GPT2LMHeadModel``, and the published files invert both. One segment is added or dropped to
+        match, and the bound names stand when neither resolves the whole set.
+        """
+        bound = self.keys()
+        if bound <= checkpoint:
+            return {key: key for key in bound}
+
+        leading = {key.split(".", 1)[0] for key in bound}
+        for prefix in {key.split(".", 1)[0] for key in checkpoint} - leading:
+            renamed = {key: f"{prefix}.{key}" for key in bound}
+            if set(renamed.values()) <= checkpoint:
+                return renamed
+
+        if len(leading) == 1:
+            prefix = f"{leading.pop()}."
+            renamed = {key: key.removeprefix(prefix) for key in bound}
+            if set(renamed.values()) <= checkpoint:
+                return renamed
+
+        return {key: key for key in bound}
+
     def load(self, read: Callable[[str], np.ndarray], available: Iterable[str]) -> list[str]:
         """
         Fill every bound parameter from the checkpoint.
@@ -152,9 +179,10 @@ class KeyMap:
         surplus : list of str
             Checkpoint keys no parameter loads from, sorted.
         """
-        bound, checkpoint = self.keys(), set(available)
+        checkpoint = set(available)
+        names = self._checkpoint_names(checkpoint)
 
-        missing = sorted(bound - checkpoint)
+        missing = sorted(set(names.values()) - checkpoint)
         if missing:
             shown = ", ".join(repr(key) for key in missing[:5])
             more = f" (and {len(missing) - 5} more)" if len(missing) > 5 else ""
@@ -164,7 +192,8 @@ class KeyMap:
                 f"that runs."
             )
 
-        for parameter, (key, transform) in self._bindings.items():
+        for parameter, (bound_key, transform) in self._bindings.items():
+            key = names[bound_key]
             try:
                 array = read(key)
             except TypeError as error:
@@ -185,7 +214,7 @@ class KeyMap:
                 )
             parameter.set_value(array.astype(parameter.type.dtype, copy=False), borrow=True)
 
-        surplus = sorted(checkpoint - bound)
+        surplus = sorted(checkpoint - set(names.values()))
         if surplus:
             _log.info(
                 "%d checkpoint tensor(s) went unused: %s",
