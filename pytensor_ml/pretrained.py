@@ -37,7 +37,12 @@ from pytensor_ml.pytensorf import (
     collect_data_inputs,
     collect_shared_variables,
 )
-from pytensor_ml.state import Initializer, UnrecordedInitializer
+from pytensor_ml.state import (
+    EmptyInitializer,
+    Initializer,
+    UnrecordedInitializer,
+    initial_values_from,
+)
 
 CONFIG_FILENAME = "config.json"
 WEIGHTS_FILENAME = "model.safetensors"
@@ -470,11 +475,16 @@ def from_pretrained(
                 "checkpoint carries none."
             )
         config = json.loads((directory / CONFIG_FILENAME).read_text())
-        data_inputs, outputs, keys = build_from_config(config)
+        # Every parameter the builder makes is bound to a checkpoint key, and load fills all of them or
+        # raises, so drawing them first is work thrown away.
+        with initial_values_from(EmptyInitializer()):
+            data_inputs, outputs, keys = build_from_config(config)
         with safe_open(_huggingface_weights(directory, variant), framework="numpy") as weights:
             keys.load(weights.get_tensor, weights.keys())
         return data_inputs, outputs
 
-    data_inputs, outputs = load_network(directory / CONFIG_FILENAME, restore_rng=restore_rng)
+    # load_state fills every weight or raises, so the draws load_network would make are thrown away too.
+    with initial_values_from(EmptyInitializer()):
+        data_inputs, outputs = load_network(directory / CONFIG_FILENAME, restore_rng=restore_rng)
     load_state(_weight_variables(outputs), directory / WEIGHTS_FILENAME)
     return data_inputs, outputs
