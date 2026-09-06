@@ -990,3 +990,18 @@ def test_gpt2_builder_ties_the_head_to_the_token_embedding():
 def test_gpt2_builder_rejects_an_unknown_activation():
     with pytest.raises(ValueError, match="activation_function is 'swiglu'"):
         build_from_config({**TINY_GPT2, "activation_function": "swiglu"})
+
+
+def test_a_sharded_checkpoint_is_reported_rather_than_partly_loaded(tmp_path):
+    """One shard of a sharded checkpoint would fill some parameters and leave the rest at their
+    initialization."""
+    component = _write_huggingface_component(
+        tmp_path / "text_encoder",
+        TINY_CLIP,
+        _tiny_clip_tensors(),
+        "model-00001-of-00002.safetensors",
+    )
+    (component / "model.safetensors.index.json").write_text("{}")
+
+    with pytest.raises(NotImplementedError, match="sharded checkpoint"):
+        from_pretrained(component)

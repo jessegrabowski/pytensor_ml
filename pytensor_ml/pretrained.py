@@ -74,17 +74,27 @@ def _huggingface_weights(directory: Path, variant: str | None) -> Path:
     writes ``diffusion_pytorch_model.safetensors``, and a half-precision download inserts a variant
     before the extension -- so it is resolved rather than assumed.
     """
-    candidates = sorted(directory.glob("*.safetensors"))
-    if variant is not None:
-        candidates = [path for path in candidates if path.suffixes[:-1] == [f".{variant}"]]
-        if not candidates:
-            raise FileNotFoundError(f"No *.{variant}.safetensors in {directory}.")
+    shards = sorted(directory.glob("*.safetensors.index.json"))
+    if shards:
+        raise NotImplementedError(
+            f"{directory} holds a sharded checkpoint ({shards[0].name}). Sharded checkpoints are not "
+            f"read yet; no single shard is the whole model."
+        )
 
+    candidates = sorted(directory.glob("*.safetensors"))
     if not candidates:
         raise FileNotFoundError(
             f"No .safetensors weights in {directory}. Only safetensors is read; a .bin checkpoint "
             f"has to be converted first."
         )
+
+    if variant is not None:
+        # Matched on the stem rather than on suffixes, which would read the "1.0" of a name like
+        # sd-xl-1.0.safetensors as a variant.
+        candidates = [path for path in candidates if path.stem.endswith(f".{variant}")]
+        if not candidates:
+            raise FileNotFoundError(f"No *.{variant}.safetensors in {directory}.")
+
     if len(candidates) > 1:
         names = ", ".join(path.name for path in candidates)
         raise ValueError(
