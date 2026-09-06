@@ -831,26 +831,64 @@ def _write_huggingface_component(directory, config, tensors, filename):
     return directory
 
 
-def _tiny_clip_tensors(config):
-    """Checkpoint tensors matching TINY_CLIP, shaped as HuggingFace stores them."""
-    _, _, keys = build_from_config(config)
+# The key names and checkpoint shapes HuggingFace writes for a two-layer CLIP of TINY_CLIP's size,
+# spelled out rather than read back from the builder. A fixture derived from the builder cannot fail
+# on a wrong key, a wrong scope or a missing transpose, which is most of what the loader can get
+# wrong.
+TINY_CLIP_CHECKPOINT = {
+    "text_model.embeddings.token_embedding.weight": (50, 8),
+    "text_model.embeddings.position_embedding.weight": (16, 8),
+    "text_model.final_layer_norm.weight": (8,),
+    "text_model.final_layer_norm.bias": (8,),
+    **{
+        f"text_model.encoder.layers.{layer}.{name}": shape
+        for layer in range(2)
+        for name, shape in {
+            "layer_norm1.weight": (8,),
+            "layer_norm1.bias": (8,),
+            "layer_norm2.weight": (8,),
+            "layer_norm2.bias": (8,),
+            "self_attn.q_proj.weight": (8, 8),
+            "self_attn.q_proj.bias": (8,),
+            "self_attn.k_proj.weight": (8, 8),
+            "self_attn.k_proj.bias": (8,),
+            "self_attn.v_proj.weight": (8, 8),
+            "self_attn.v_proj.bias": (8,),
+            "self_attn.out_proj.weight": (8, 8),
+            "self_attn.out_proj.bias": (8,),
+            "mlp.fc1.weight": (32, 8),
+            "mlp.fc1.bias": (32,),
+            "mlp.fc2.weight": (8, 32),
+            "mlp.fc2.bias": (8,),
+        }.items()
+    },
+}
+
+
+def _tiny_clip_tensors():
     rng = np.random.default_rng(0)
-    tensors = {}
-    # CLIP is written with nn.Linear, so every dense weight is stored channel-first and the
-    # checkpoint holds the parameter's transpose. Embeddings are 2-D too but are stored as built;
-    # norms and biases are 1-D.
-    stored_as_built = ("token_embedding.weight", "position_embedding.weight")
-    for key in sorted(keys.keys()):
-        shape = keys.parameter_for(key).get_value().shape
-        transposed = len(shape) == 2 and not key.endswith(stored_as_built)
-        tensors[key] = rng.normal(size=shape[::-1] if transposed else shape).astype("float16")
-    return tensors
+    return {
+        key: rng.normal(size=shape).astype("float16") for key, shape in TINY_CLIP_CHECKPOINT.items()
+    }
+
+
+def test_the_clip_builder_binds_exactly_what_a_checkpoint_holds():
+    """The fixture below is only worth trusting if it is the checkpoint HuggingFace would write, so
+    the builder's bindings are checked against it rather than the other way round."""
+    _, _, keys = build_from_config(TINY_CLIP)
+
+    assert keys.keys() == set(TINY_CLIP_CHECKPOINT)
+    for key, checkpoint_shape in TINY_CLIP_CHECKPOINT.items():
+        parameter = keys.parameter_for(key).get_value().shape
+        expected = checkpoint_shape[::-1] if len(checkpoint_shape) == 2 else checkpoint_shape
+        transposed = expected if key.endswith("_proj.weight") or ".fc" in key else checkpoint_shape
+        assert parameter == transposed, key
 
 
 def test_from_pretrained_builds_and_loads_a_huggingface_directory(tmp_path):
     config = {**TINY_CLIP}
     component = _write_huggingface_component(
-        tmp_path / "text_encoder", config, _tiny_clip_tensors(config), "model.safetensors"
+        tmp_path / "text_encoder", config, _tiny_clip_tensors(), "model.safetensors"
     )
 
     inputs, outputs = from_pretrained(component)
@@ -864,7 +902,7 @@ def test_from_pretrained_builds_and_loads_a_huggingface_directory(tmp_path):
 
 def test_from_pretrained_needs_a_variant_when_several_weight_files_exist(tmp_path):
     config = {**TINY_CLIP}
-    tensors = _tiny_clip_tensors(config)
+    tensors = _tiny_clip_tensors()
     component = _write_huggingface_component(
         tmp_path / "text_encoder", config, tensors, "model.safetensors"
     )
