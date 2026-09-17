@@ -79,11 +79,7 @@ class LBFGSDirection(SymbolicOp):
     def filter_inputs(*inputs: Variable | float | int) -> tuple[Variable, ...]:
         count, gamma, *raw = inputs
         tensors = [pt.as_tensor_variable(tensor) for tensor in raw]
-        return (
-            pt.as_tensor_variable(count).astype("int64"),
-            pt.as_tensor_variable(gamma).astype(tensors[0].dtype),
-            *tensors,
-        )
+        return (_scalar_at(count, "int64"), _scalar_at(gamma, tensors[0].dtype), *tensors)
 
     def build_inner_graph(self, *inputs: TensorVariable) -> list[Variable]:
         n, m = self.n_parameters, self.memory_size
@@ -134,6 +130,14 @@ class LBFGSDirection(SymbolicOp):
         if n == 1:
             r = [r]
         return [v[-1] for v in r]
+
+
+def _scalar_at(value: Variable | float | int, dtype: str) -> TensorVariable:
+    """Return ``value`` as a scalar of ``dtype``, built at that dtype rather than cast to it when it is a
+    literal, so no ``Cast`` node enters the graph for a Python number."""
+    if isinstance(value, Variable):
+        return pt.as_tensor_variable(value).astype(dtype)
+    return pt.constant(value, dtype=dtype)
 
 
 def _require_stack_of(
