@@ -7,7 +7,7 @@ pytest.importorskip("mlx.core")
 
 from pytensor_ml.optim.lbfgs import LBFGSDirection
 from tests.dispatch.mlx.test_basic import compare_mlx_and_py
-from tests.optim.test_lbfgs import ring_stacks, two_loop_direction
+from tests.optim.test_lbfgs import dense_inverse_hessian, ring_stacks
 
 floatX = pytensor.config.floatX
 
@@ -41,7 +41,7 @@ def test_direction_matches_py(n_pairs, count):
         [*gradient_pieces, *S, *Y],
         assert_fn=lambda got, want: np.testing.assert_allclose(got, want, rtol=1e-4),
     )
-    want = two_loop_direction(gamma, gradient, pairs)
+    want = dense_inverse_hessian(gamma, pairs, size) @ gradient
     np.testing.assert_allclose(
         np.concatenate([np.asarray(d).ravel() for d in got]), want, rtol=1e-4
     )

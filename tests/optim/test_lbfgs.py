@@ -10,20 +10,17 @@ floatX = pytensor.config.floatX
 RTOL = 1e-6 if floatX == "float64" else 1e-4
 
 
-def two_loop_direction(gamma, gradient, pairs):
-    """Nocedal and Wright 7.4 on one flat vector, over ``(s, y)`` pairs given oldest first."""
-    q = gradient.astype(np.float64)
-    alphas = []
-    for s, y in reversed(pairs):
+def dense_inverse_hessian(gamma, pairs, size):
+    """The matrix the two-loop recursion multiplies by, built from its definition: BFGS updates from
+    ``gamma I`` over ``(s, y)`` pairs oldest first, ``H <- V^T H V + rho s s^T`` with ``V = I - rho y s^T``
+    (Nocedal and Wright, equation 7.16)."""
+    H = gamma * np.eye(size)
+    for s, y in pairs:
+        s, y = s.astype(np.float64), y.astype(np.float64)
         rho = 1.0 / (y @ s)
-        alphas.append(rho * (s @ q))
-        q = q - alphas[-1] * y
-    r = gamma * q
-    for (s, y), alpha in zip(pairs, reversed(alphas)):
-        rho = 1.0 / (y @ s)
-        beta = rho * (y @ r)
-        r = r + (alpha - beta) * s
-    return r
+        V = np.eye(size) - rho * np.outer(y, s)
+        H = V.T @ H @ V + rho * np.outer(s, s)
+    return H
 
 
 def ring_stacks(pairs, memory_size, count, shapes):
@@ -42,9 +39,10 @@ def ring_stacks(pairs, memory_size, count, shapes):
 
 @pytest.mark.parametrize("n_pairs, count", [(2, 2), (4, 6)], ids=["not_yet_wrapped", "wrapped"])
 def test_direction_matches_the_two_loop_recursion_over_a_ring(n_pairs, count):
-    # The reference sees a flat vector and a chronological list, so it shares no ring or reshape
-    # arithmetic with the op. Two parameters of different rank exercise the cross-parameter dot products.
-    # Before the ring wraps its empty slots lead the order; after, the newest pair sits mid-ring.
+    # The reference is the dense matrix the recursion is an algorithm for, built from the textbook update
+    # on a flat vector, so it shares neither the loop nor the ring or reshape arithmetic with the op. Two
+    # parameters of different rank exercise the cross-parameter dot products. Before the ring wraps its
+    # empty slots lead the order; after, the newest pair sits mid-ring.
     rng = np.random.default_rng(0)
     shapes = [(3, 2), (4,)]
     size = sum(int(np.prod(shape)) for shape in shapes)
@@ -53,7 +51,8 @@ def test_direction_matches_the_two_loop_recursion_over_a_ring(n_pairs, count):
     pairs = []
     for _ in range(n_pairs):
         s = rng.normal(size=size).astype(floatX)
-        pairs.append((s, rng.normal(size=size).astype(floatX) + 0.5 * s))  # keeps y . s > 0
+        noise = rng.normal(size=size).astype(floatX)
+        pairs.append((s, noise - (noise @ s) / (s @ s) * s + 0.5 * s))  # y . s = 0.5 s . s > 0
     S, Y = ring_stacks(pairs, memory_size, count, shapes)
 
     op = LBFGSDirection(n_parameters=2, memory_size=memory_size)
@@ -69,7 +68,25 @@ def test_direction_matches_the_two_loop_recursion_over_a_ring(n_pairs, count):
         piece.reshape(shape) for piece, shape in zip(np.split(gradient, splits), shapes)
     ]
     got = np.concatenate([d.ravel() for d in direction(*gradient_pieces, *S, *Y)])
-    np.testing.assert_allclose(got, two_loop_direction(gamma, gradient, pairs), rtol=RTOL)
+    want = dense_inverse_hessian(gamma, pairs, size) @ gradient
+    np.testing.assert_allclose(got, want, rtol=RTOL)
+
+
+def test_a_scalar_parameter_has_vector_stacks():
+    g = pt.scalar("g", dtype=floatX)
+    S = pt.vector("S", dtype=floatX)
+    Y = pt.vector("Y", dtype=floatX)
+
+    d = LBFGSDirection(n_parameters=1, memory_size=3)(1, 1.0, g, S, Y)
+
+    # One pair (s, y) with y = 2 s: H y = s, so H maps g onto g / 2.
+    np.testing.assert_allclose(
+        d.eval(
+            {g: 4.0, S: np.array([0, 0, 1.5], dtype=floatX), Y: np.array([0, 0, 3.0], dtype=floatX)}
+        ),
+        2.0,
+        rtol=RTOL,
+    )
 
 
 def test_an_empty_memory_scales_the_gradient():
