@@ -106,7 +106,7 @@ class LBFGSDirection(SymbolicOp):
         def right_product(slot, *vector):
             s = [stack[slot] for stack in S]
             y = [stack[slot] for stack in Y]
-            alpha = curvatures[slot] * _dot(s, vector)
+            alpha = curvatures[slot] * flat_dot(s, vector)
             return [v - alpha.astype(v.dtype) * y_p for v, y_p in zip(vector, y)] + [alpha]
 
         *q, alphas = pytensor.scan(
@@ -121,7 +121,7 @@ class LBFGSDirection(SymbolicOp):
         def left_product(slot, alpha, *vector):
             s = [stack[slot] for stack in S]
             y = [stack[slot] for stack in Y]
-            beta = curvatures[slot] * _dot(y, vector)
+            beta = curvatures[slot] * flat_dot(y, vector)
             return [v + (alpha - beta).astype(v.dtype) * s_p for v, s_p in zip(vector, s)]
 
         # The backward loop reports its alphas newest first and the forward loop reads them oldest first.
@@ -153,8 +153,8 @@ def _require_stack_of(
         )
 
 
-def _dot(left: Sequence[TensorVariable], right: Sequence[TensorVariable]) -> TensorVariable:
-    # A dot of two raveled rows reaches BLAS under numba, where a fused multiply-and-sum does not.
+def flat_dot(left: Sequence[TensorVariable], right: Sequence[TensorVariable]) -> TensorVariable:
+    """Dot product of two lists of tensors read as one flat vector each, through BLAS under numba."""
     return pt.sum([pt.dot(a.ravel(), b.ravel()) for a, b in zip(left, right)])
 
 
@@ -162,8 +162,10 @@ def _curvatures(
     S: Sequence[TensorVariable], Y: Sequence[TensorVariable], memory_size: int
 ) -> TensorVariable:
     """Return ``1 / (y_i . s_i)`` per slot, and zero for an empty slot rather than a division by zero."""
-    products = pt.sum(
-        [pt.sum((s * y).reshape((memory_size, -1)), axis=1) for s, y in zip(S, Y)], axis=0
+    # The same dot the writer's admission test uses, so a pair it admitted never rounds to a negative
+    # curvature here.
+    products = pt.stack(
+        [flat_dot([s[slot] for s in S], [y[slot] for y in Y]) for slot in range(memory_size)]
     )
     empty = pt.eq(products, 0.0)
     return pt.switch(empty, 0.0, 1.0 / pt.switch(empty, 1.0, products))
