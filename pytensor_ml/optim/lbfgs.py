@@ -154,7 +154,8 @@ def _require_stack_of(
 
 
 def _dot(left: Sequence[TensorVariable], right: Sequence[TensorVariable]) -> TensorVariable:
-    return pt.sum([pt.sum(a * b) for a, b in zip(left, right)])
+    # A dot of two raveled rows reaches BLAS under numba, where a fused multiply-and-sum does not.
+    return pt.sum([pt.dot(a.ravel(), b.ravel()) for a, b in zip(left, right)])
 
 
 def _curvatures(
