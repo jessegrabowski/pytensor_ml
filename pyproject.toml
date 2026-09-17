@@ -37,7 +37,6 @@ keywords = [
 dependencies = [
   "pytensor>=3.2.3,<4.0.0",
   "numpy",
-  "safetensors"
 ]
 
 [project.urls]
@@ -48,6 +47,7 @@ Tracker = "https://github.com/pymc-devs/pytensor-ml/issues"
 
 [project.optional-dependencies]
 dev = [
+    "safetensors",
     "pre-commit",
     "pytest",
     "pytest-cov",

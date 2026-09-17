@@ -10,13 +10,22 @@ import numpy as np
 
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.tensor.random.type import RandomGeneratorType
-from safetensors import safe_open
-from safetensors.numpy import save_file
 
 # Generator state rides in the archive's metadata, which is a flat str-to-str map shared with whatever
 # wrote the file, so our entries are namespaced away from a foreign writer's (HuggingFace stores a
 # "format" key there).
 _RNG_KEY_PREFIX = "rng/"
+
+
+def import_safetensors():
+    try:
+        import safetensors
+        import safetensors.numpy
+    except ModuleNotFoundError as error:
+        raise ModuleNotFoundError(
+            "pytensor-ml requires safetensors for checkpointing. Install it with `pip install safetensors`."
+        ) from error
+    return safetensors
 
 
 def holds_generator(variable: SharedVariable) -> bool:
@@ -154,9 +163,8 @@ def save_state(shared_variables: Sequence[SharedVariable], path: str | Path) -> 
     optimizer state to capture a complete training checkpoint; both are ordinary shared variables and
     carry self-describing names (e.g. ``"fc1/weight"``, ``"fc1/weight/adam/first_moment"``).
     :func:`~pytensor_ml.pytensorf.collect_optimizer_state` finds the half no walk of the graph reaches.
-    A random
-    generator has no tensor to store, so its state is written to the archive's metadata under the same
-    key, which is what lets a stochastic network checkpoint at all.
+    A random generator has no tensor to store, so its state is written to the archive's metadata under
+    the same key, which is what lets a stochastic network checkpoint at all.
 
     Parameters
     ----------
@@ -194,7 +202,8 @@ def save_state(shared_variables: Sequence[SharedVariable], path: str | Path) -> 
             generator_states[_RNG_KEY_PREFIX + key] = json.dumps(jsonable_rng_state(state))
         else:
             tensors[key] = _as_saveable_array(variable.get_value(), variable.type.dtype)
-    save_file(tensors, fspath(path), metadata=generator_states or None)
+    safetensors = import_safetensors()
+    safetensors.numpy.save_file(tensors, fspath(path), metadata=generator_states or None)
 
 
 def _as_saveable_array(value: Any, dtype: str) -> np.ndarray:
@@ -274,7 +283,8 @@ def load_state(
         source_by_key[key] = source
         target_by_key[key] = variable
 
-    with safe_open(fspath(path), framework="numpy") as archive:
+    safetensors = import_safetensors()
+    with safetensors.safe_open(fspath(path), framework="numpy") as archive:
         values = {key: archive.get_tensor(key) for key in archive.keys()}
         metadata = archive.metadata() or {}
     archived_states = {
