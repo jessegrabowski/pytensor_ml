@@ -16,7 +16,7 @@ def mlx_funcify_LBFGSDirection(op, node=None, **kwargs):
         return [mx.take(stack, slot, axis=0) for stack in stacks]
 
     def dot(left, right):
-        # Vector matmul is the fastest dot mlx has from 0.32.1 (ml-explore/mlx#3580); before that it ran
+        # Vector matmul is the fastest dot mlx has from 0.32.2 (ml-explore/mlx#3580); before that it ran
         # one threadgroup and was slower than a fused reduction by two orders of magnitude.
         return sum(a.reshape(-1) @ b.reshape(-1) for a, b in zip(left, right))
 
