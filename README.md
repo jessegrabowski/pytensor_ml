@@ -19,8 +19,9 @@ any other PyTensor graph — a PyMC model included — as there is nothing else 
 pip install pytensor-ml
 ```
 
-The only hard dependencies are `pytensor`, `numpy`, and `safetensors`. A backend beyond the default (`numba`,
-`jax`, `torch`, `mlx`) is installed separately, and only loads when you actually compile against it.
+The only hard dependencies are `pytensor` and `numpy`. Saving and loading weights needs `safetensors`
+(`pip install safetensors`). A backend beyond the default (`numba`, `jax`, `torch`, `mlx`) is installed
+separately, and only loads when you actually compile against it.
 
 ## Quickstart
 

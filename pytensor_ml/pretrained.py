@@ -11,12 +11,12 @@ import pytensor
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.basic import Variable
 from pytensor.tensor.random.type import RandomGeneratorType
-from safetensors import safe_open
 
 from pytensor_ml.checkpoint import (
     bit_generator_kind,
     generator_from_state,
     holds_generator,
+    import_safetensors,
     jsonable_rng_state,
     load_state,
     save_state,
@@ -479,7 +479,10 @@ def from_pretrained(
         # raises, so drawing them first is work thrown away.
         with initial_values_from(EmptyInitializer()):
             data_inputs, outputs, keys = build_from_config(config)
-        with safe_open(_huggingface_weights(directory, variant), framework="numpy") as weights:
+        safetensors = import_safetensors()
+        with safetensors.safe_open(
+            _huggingface_weights(directory, variant), framework="numpy"
+        ) as weights:
             keys.load(weights.get_tensor, weights.keys())
         return data_inputs, outputs
 
