@@ -72,6 +72,21 @@ def test_direction_matches_the_two_loop_recursion_over_a_ring(n_pairs, count):
     np.testing.assert_allclose(got, want, rtol=RTOL)
 
 
+def test_parameters_of_different_dtypes_keep_their_own():
+    # The cross-parameter dot products upcast to the widest dtype; each carried vector has to be cast
+    # back or the scan refuses the narrower parameter's recurrence.
+    g_wide = pt.tensor("g_wide", shape=(3,), dtype="float64")
+    g_narrow = pt.tensor("g_narrow", shape=(2,), dtype="float32")
+    S_wide, Y_wide = (pt.tensor(name, shape=(2, 3), dtype="float64") for name in "SY")
+    S_narrow, Y_narrow = (pt.tensor(name, shape=(2, 2), dtype="float32") for name in ("s", "y"))
+
+    wide, narrow = LBFGSDirection(n_parameters=2, memory_size=2)(
+        1, 0.5, g_wide, g_narrow, S_wide, S_narrow, Y_wide, Y_narrow, return_list=True
+    )
+
+    assert (wide.dtype, narrow.dtype) == ("float64", "float32")
+
+
 def test_a_scalar_parameter_has_vector_stacks():
     g = pt.scalar("g", dtype=floatX)
     S = pt.vector("S", dtype=floatX)

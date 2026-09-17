@@ -107,7 +107,7 @@ class LBFGSDirection(SymbolicOp):
             s = [stack[slot] for stack in S]
             y = [stack[slot] for stack in Y]
             alpha = curvatures[slot] * _dot(s, vector)
-            return [v - alpha * y_p for v, y_p in zip(vector, y)] + [alpha]
+            return [v - alpha.astype(v.dtype) * y_p for v, y_p in zip(vector, y)] + [alpha]
 
         *q, alphas = pytensor.scan(
             right_product,
@@ -116,13 +116,13 @@ class LBFGSDirection(SymbolicOp):
             go_backwards=True,
             return_updates=False,
         )
-        r = [gamma * v[-1] for v in q]
+        r = [gamma.astype(v.dtype) * v[-1] for v in q]
 
         def left_product(slot, alpha, *vector):
             s = [stack[slot] for stack in S]
             y = [stack[slot] for stack in Y]
             beta = curvatures[slot] * _dot(y, vector)
-            return [v + (alpha - beta) * s_p for v, s_p in zip(vector, s)]
+            return [v + (alpha - beta).astype(v.dtype) * s_p for v, s_p in zip(vector, s)]
 
         # The backward loop reports its alphas newest first and the forward loop reads them oldest first.
         r = pytensor.scan(
