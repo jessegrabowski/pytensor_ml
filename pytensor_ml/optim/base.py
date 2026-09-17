@@ -538,8 +538,10 @@ def state_for(
     value = parameter.get_value(borrow=True)
     shape = value.shape if history_size is None else (history_size, *value.shape)
     static_shape = parameter.type.shape if history_size is None else (history_size, *parameter.type.shape)
+    # The declared dtype rather than the value's: after a step on mlx the value is a device array
+    # whose dtype numpy cannot read.
     state = pytensor.shared(
-        np.full(shape, fill_value, dtype=value.dtype),
+        np.full(shape, fill_value, dtype=parameter.type.dtype),
         name=f"{parameter.name}/{slot}",
         shape=static_shape,
     )
