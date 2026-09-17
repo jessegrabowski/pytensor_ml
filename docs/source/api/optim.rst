@@ -130,3 +130,4 @@ Low-level update functions
     rprop_updates
     adagrad_updates
     adadelta_updates
+    lbfgs_updates

@@ -5,7 +5,13 @@ import pytest
 
 pytest.importorskip("mlx.core")
 
+from pytensor.compile.mode import Mode
+from pytensor.link.mlx.linker import MLXLinker
+
+from pytensor_ml.optim import lbfgs_updates
 from pytensor_ml.optim.lbfgs import LBFGSDirection
+from pytensor_ml.params import trainable
+from pytensor_ml.pytensorf import function
 from tests.dispatch.mlx.test_basic import compare_mlx_and_py
 from tests.optim.test_lbfgs import dense_inverse_hessian, ring_stacks
 
@@ -58,3 +64,28 @@ def test_a_single_parameter_returns_one_array():
     d = LBFGSDirection(n_parameters=1, memory_size=3)(0, 0.5, g_in, S_in, Y_in)
 
     compare_mlx_and_py([g_in, S_in, Y_in], d, [g, S, Y])
+
+
+@pytest.mark.parametrize("use_compile", [True, False], ids=["compiled", "eager"])
+def test_the_rule_reaches_the_minimum_of_a_quadratic(use_compile):
+    # The rule reads and writes its ring with a traced slot, which mlx traces only as advanced indexing
+    # (pymc-devs/pytensor#2422); this is the end-to-end check that the whole step compiles and runs.
+    A = np.array([[3.0, 0.5], [0.5, 1.0]])
+    b = np.array([1.0, -2.0])
+    u = trainable(np.array([5.0], dtype=floatX), name="u")
+    v = trainable(np.array([-3.0], dtype=floatX), name="v")
+    x = pt.concatenate([u, v])
+    loss = 0.5 * x @ pt.constant(A, dtype=floatX) @ x - pt.constant(b, dtype=floatX) @ x
+    mode = Mode(linker=MLXLinker(use_compile=use_compile), optimizer="fast_run")
+    step = function(
+        [], loss, updates=lbfgs_updates(loss, [u, v], learning_rate=1.0, memory_size=2), mode=mode
+    )
+
+    for _ in range(12):
+        step()
+
+    np.testing.assert_allclose(
+        np.concatenate([np.asarray(u.get_value()), np.asarray(v.get_value())]),
+        np.linalg.solve(A, b),
+        rtol=1e-4,
+    )
