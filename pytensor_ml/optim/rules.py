@@ -12,7 +12,6 @@ from pytensor_ml.optim.base import (
     LearningRate,
     LossGradientsOrUpdates,
     Parameter,
-    Rate,
     Steps,
     Updates,
     gradients_to_descend,
@@ -909,7 +908,7 @@ def rprop_updates(
 def lbfgs_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 1.0,
+    learning_rate: LearningRate = 1.0,
     memory_size: int = 10,
     scale_init_precond: bool = True,
     namespace: str = "lbfgs",
@@ -958,7 +957,7 @@ def lbfgs_updates(
     Examples
     --------
     Compile the step yourself rather than going through :func:`~pytensor_ml.optim.train.compile_train`.
-    The rule returns the updates dict directly, at a fixed rate and with no line search:
+    The rule returns the updates dict directly, with no line search:
 
     .. code-block:: python
 
@@ -980,9 +979,9 @@ def lbfgs_updates(
         raise ValueError(f"memory_size must be at least 1, got {memory_size}.")
 
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
-
     step_count = step_counter(f"{namespace}/step_count")
+    learning_rate = to_floatx(rate_on(learning_rate, step_count))
+
     pairs_written = scalar_state(f"{namespace}/pairs_written", dtype="int64")
     previous_values = [state_for(p, f"{namespace}/previous_value") for p in parameters]
     previous_gradients = [state_for(p, f"{namespace}/previous_gradient") for p in parameters]

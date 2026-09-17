@@ -21,6 +21,7 @@ from pytensor_ml.optim import (
     adamw_updates,
     compile_train,
     cosine_schedule,
+    lbfgs,
     lbfgs_updates,
     nadam,
     nadam_updates,
@@ -64,6 +65,7 @@ def trainable(value, name=None, **kwargs):
         nadam(learning_rate=1e-2),
         adamax(learning_rate=1e-2),
         rprop(learning_rate=1e-2),
+        lbfgs(learning_rate=1e-2),
     ],
     ids=[
         "sgd",
@@ -81,6 +83,7 @@ def trainable(value, name=None, **kwargs):
         "nadam",
         "adamax",
         "rprop",
+        "lbfgs",
     ],
 )
 def test_rule_reduces_loss(run_training, rule):
@@ -99,8 +102,9 @@ def test_rule_reduces_loss(run_training, rule):
         (rmsprop, "rmsprop_updates"),
         (adagrad, "adagrad_updates"),
         (adadelta, "adadelta_updates"),
+        (lbfgs, "lbfgs_updates"),
     ],
-    ids=["adam", "adamw", "nadam", "adamax", "rprop", "rmsprop", "adagrad", "adadelta"],
+    ids=["adam", "adamw", "nadam", "adamax", "rprop", "rmsprop", "adagrad", "adadelta", "lbfgs"],
 )
 def test_alias_forwards_every_argument_to_the_matching_parameter(alias, updates_name, monkeypatch):
     # test_rule_reduces_loss cannot see a mis-forward: the loss still falls if beta1 and beta2 are
@@ -644,6 +648,20 @@ def test_lbfgs_step_matches_the_dense_update_through_a_ring_wrap():
             np.concatenate([u.get_value(), v.get_value()]), x_before - lr * H @ g_before, rtol=RTOL
         )
         previous = (x_before, g_before)
+
+
+def test_lbfgs_schedule_reads_the_rules_own_clock():
+    # The rule keeps a step counter to tell the first step apart; a scheduled rate must read that same
+    # clock rather than allocate a second one measuring the same time.
+    parameter = trainable(np.array([1.0, -2.0]), name="w")
+    loss = (parameter**2).sum()
+
+    step = compile_train(loss, lbfgs(cosine_schedule(0.1, 10), memory_size=2), inputs=[])
+
+    counters = [
+        str(shared.name) for shared in step.get_shared() if str(shared.name).endswith("step_count")
+    ]
+    assert counters == ["lbfgs/step_count"]
 
 
 def test_lbfgs_without_initial_scaling_starts_along_the_raw_gradient():

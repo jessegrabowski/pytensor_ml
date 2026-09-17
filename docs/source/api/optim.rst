@@ -26,6 +26,7 @@ Update rules
     rprop
     adagrad
     adadelta
+    lbfgs
 
 Transforms
 ----------
