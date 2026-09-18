@@ -295,11 +295,10 @@ def test_sgd_names_the_step_counter_its_schedule_reads():
     [lambda: adam(learning_rate=1e-2), lambda: sgd(learning_rate=1e-2, momentum=0.9)],
     ids=["state_from_a_rule", "state_from_a_transform"],
 )
-def test_reused_rule_shares_its_optimizer_state(make_rule):
-    """A configured rule reads as a value, so compiling two training functions from one is natural. Both
-    must drive the same buffers: separate ones under the same derived name are silently wrong at runtime,
-    and collide only later when both are checkpointed together. Momentum SGD is included because its
-    velocity comes from a transform rather than the rule, which is a separate allocation path."""
+def test_each_invocation_of_a_rule_allocates_its_own_state(make_rule):
+    """A rule builds a graph, and the graph holds the state. Two invocations are two optimizers, so the
+    buffers they allocate are distinct objects even though their derived names agree. Momentum SGD is
+    included because its velocity comes from a transform rather than the rule, a separate allocation path."""
     p = trainable(np.zeros(3), name="w")
     loss = (p**2).sum()
     rule = make_rule()
@@ -307,21 +306,22 @@ def test_reused_rule_shares_its_optimizer_state(make_rule):
     first = {key for key in rule(loss, [p]) if key is not p}
     second = {key for key in rule(loss, [p]) if key is not p}
 
-    assert first and first == second
+    assert first and not first & second
 
 
-def test_two_functions_from_one_rule_continue_the_same_momentum():
-    """What the shared buffers buy: the second function continues the first's trajectory instead of
-    restarting it. Under a constant gradient, momentum SGD's step at iteration ``t`` is
-    ``lr * g * (1 - m**t) / (1 - m)``, so a continued second step is 1.9x a restarted one at ``m = 0.9``."""
+def test_two_functions_from_one_updates_dict_continue_the_same_momentum():
+    """Two training functions share state by being compiled from one updates dict. The second then
+    continues the first's trajectory instead of restarting it. Under a constant gradient, momentum SGD's
+    step at iteration ``t`` is ``lr * g * (1 - m**t) / (1 - m)``, so a continued second step is 1.9x a
+    restarted one at ``m = 0.9``."""
     p = trainable(np.zeros(2), name="w")
     gradient = np.array([2.0, -0.5])
     loss = (pt.constant(gradient, dtype=floatX) * p).sum()  # constant gradient, independent of p
     learning_rate, momentum = 0.1, 0.9
-    rule = sgd(learning_rate=learning_rate, momentum=momentum)
+    updates = sgd(learning_rate=learning_rate, momentum=momentum)(loss, [p])
 
-    step_once = function([], loss, updates=rule(loss, [p]))
-    step_again = function([], loss, updates=rule(loss, [p]))
+    step_once = function([], loss, updates=updates)
+    step_again = function([], loss, updates=updates)
 
     step_once()
     before = p.get_value().copy()
@@ -329,18 +329,6 @@ def test_two_functions_from_one_rule_continue_the_same_momentum():
 
     continued = -learning_rate * gradient * (1 - momentum**2) / (1 - momentum)
     np.testing.assert_allclose(p.get_value() - before, continued, rtol=RTOL)
-
-
-def test_separately_configured_rules_keep_independent_state():
-    """Buffers are memoized per rule, not globally, so two optimizers over the same parameter do not
-    quietly train through each other's momentum."""
-    p = trainable(np.zeros(3), name="w")
-    loss = (p**2).sum()
-
-    first = {key for key in adam(learning_rate=1e-2)(loss, [p]) if key is not p}
-    second = {key for key in adam(learning_rate=1e-2)(loss, [p]) if key is not p}
-
-    assert not first & second
 
 
 def test_adamw_first_step_applies_decoupled_decay():
@@ -623,3 +611,40 @@ def test_get_gradients_names_a_parameter_lost_to_a_second_derivative():
 
     with pytest.raises(DisconnectedInputError, match=r"\['output_bias'\]"):
         sgd_updates(loss, [weight, scale, output_bias])
+
+
+def test_a_functional_rule_reads_a_schedule_off_its_own_clock():
+    """A schedule is a learning rate, so the functional API takes one where it takes a float. The rule
+    resolves it against the clock it already counts its own steps on, so the graph holds one clock."""
+    p = trainable(np.zeros(3), name="w")
+    loss = (p**2).sum()
+    updates = adam_updates(loss, [p], learning_rate=cosine_schedule(0.1, total_steps=10))
+    clocks = [key for key in updates if isinstance(key, params.StepCounter)]
+
+    step = function([], loss, updates=updates)
+    step()
+    step()
+
+    assert [clock.name for clock in clocks] == ["adam/step_count"]
+    assert int(clocks[0].get_value()) == 2
+
+
+def test_a_numpy_scalar_rate_does_not_widen_a_float32_graph():
+    """A rate read back from a config or a checkpoint arrives as a numpy scalar, and a ``np.float64`` in a
+    float32 graph makes an update pytensor refuses with an error naming the parameter."""
+    with pytensor.config.change_flags(floatX="float32"):
+        p = params.trainable(np.zeros(3, dtype="float32"), name="w")
+        loss = (p**2).sum()
+        updates = sgd_updates(loss, [p], learning_rate=np.float64(0.1))
+
+        assert updates[p].dtype == "float32"
+
+
+def test_sgd_momentum_keeps_its_velocity_under_its_own_namespace():
+    """The ``namespace`` the docstring offers against colliding state has to reach the velocity too, or a
+    momentum sgd next to a ``trace`` still collides and the remedy on the sgd side does nothing."""
+    p = trainable(np.zeros(3), name="w")
+    loss = (p**2).sum()
+    updates = sgd(learning_rate=0.1, momentum=0.9, namespace="slow")(loss, [p])
+
+    assert {key.name for key in updates if key is not p} == {"w/slow/velocity"}

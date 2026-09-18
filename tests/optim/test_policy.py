@@ -127,6 +127,18 @@ def test_a_noisy_loss_cuts_itself_into_the_ground_without_a_floor_and_a_cooldown
     assert guarded_floor == pytest.approx(0.01, rel=RTOL)
 
 
+def test_rejects_a_scale_the_rule_does_not_read():
+    """Cutting a multiplier no step reads is a policy that looks configured and does nothing. The usual way
+    to get there is two ``scalar_state`` calls under one name, which are two variables."""
+    p, loss = plateaued_problem()
+    rate_scale = scalar_state("plateau/scale", fill_value=1.0)
+    policy_scale = scalar_state("plateau/scale", fill_value=1.0)
+    rule = reduce_on_plateau(adam(learning_rate=rate_scale * 0.05), policy_scale)
+
+    with pytest.raises(ValueError, match="no parameter's step reads it"):
+        rule(loss, [p])
+
+
 def test_rejects_precomputed_gradients():
     """The policy decides from the loss, and `loss_or_gradients` is a union, so a caller passing gradients
     would otherwise hand it a list and get a confusing failure deep in the comparison."""
@@ -214,9 +226,9 @@ def test_the_decision_is_made_on_the_window_mean_not_its_last_loss():
     the loss is exactly what is fed and the policy's own state is all that changes."""
     loss = pt.scalar("loss")
     scale = scalar_state("plateau/scale", fill_value=1.0)
-    rule = reduce_on_plateau(adam(learning_rate=scale), scale, accumulation_size=2)
-    best_loss = next(v for v in rule(loss, []) if v.name == "plateau/best_loss")
-    step = compile_train(loss, rule, parameters=[], inputs=[loss])
+    updates = reduce_on_plateau(adam(learning_rate=scale), scale, accumulation_size=2)(loss, [])
+    best_loss = next(v for v in updates if v.name == "plateau/best_loss")
+    step = compile_train(loss, updates, parameters=[], inputs=[loss])
 
     step(np.asarray(4.0, dtype=config.floatX))
     step(np.asarray(0.0, dtype=config.floatX))

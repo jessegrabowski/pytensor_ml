@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import numpy as np
 import pytensor.tensor as pt
 
+from pytensor.graph import graph_inputs
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import (
@@ -12,7 +13,6 @@ from pytensor_ml.optim.base import (
     Steps,
     Transform,
     Updates,
-    reuses_state,
     scalar_state,
 )
 from pytensor_ml.optim.checks import checked_scalar
@@ -58,7 +58,9 @@ def reduce_on_plateau(
     rule : Transform
         The rule to wrap. Its rate must be built from ``scale`` for the cuts to reach the step.
     scale : shared tensor variable
-        The multiplier this policy owns. Nothing else may write it.
+        The multiplier this policy owns. Nothing else may write it, and the rule's step must read it, or
+        the policy raises when invoked. Two invocations of one policy each keep a fresh history but cut
+        this same variable, so two training functions built from one policy cut it twice as fast.
     factor : float
         Multiplier applied on a cut, in the open interval (0, 1). Default 0.1.
     patience : int or TensorVariable
@@ -134,7 +136,6 @@ def reduce_on_plateau(
         condition_fn=lambda value: value >= 1,
     )
 
-    @reuses_state
     def policy(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -154,11 +155,19 @@ def reduce_on_plateau(
                 "would move uphill. Put an optimizer such as `adam(rate)` inside the policy."
             )
         updates = Steps(result)
+        steps = [updates[parameter] for parameter in parameters]
+        if steps and scale not in graph_inputs(steps):
+            raise ValueError(
+                f"reduce_on_plateau would cut {scale.name!r}, but no parameter's step reads it, so the "
+                "cuts would reach nothing. Build the rule's rate from this same variable, e.g. "
+                "`adam(learning_rate=scale * 1e-3)`, and pass that one object here. Two `scalar_state` "
+                "calls with one name are two variables."
+            )
 
         best_loss = scalar_state(f"{namespace}/best_loss", fill_value=np.inf)
-        waited = scalar_state(f"{namespace}/wait")
-        cooling = scalar_state(f"{namespace}/cooldown")
-        observed = scalar_state(f"{namespace}/observed")
+        waited = scalar_state(f"{namespace}/wait", dtype="int64")
+        cooling = scalar_state(f"{namespace}/cooldown", dtype="int64")
+        observed = scalar_state(f"{namespace}/observed", dtype="int64")
         mean_loss = scalar_state(f"{namespace}/mean_loss")
 
         # Everything below is gated on `deciding`, so a window that is still filling advances nothing. At the
@@ -168,23 +177,23 @@ def reduce_on_plateau(
         deciding = seen >= accumulation_size
 
         improved = deciding & (running_mean < (1 - rtol) * best_loss - atol)
-        counted = pt.where(deciding, pt.where(improved, 0.0, waited + 1), waited)
+        counted = pt.where(deciding, pt.where(improved, 0, waited + 1), waited)
 
         # Cooling down zeroes the count rather than pausing it, so the steps immediately after a cut cannot
         # add up to the next one before the network has had a chance to respond to the rate it just got.
         in_cooldown = cooling > 0
         cutting = deciding & ~in_cooldown & (counted >= patience)
-        next_cooling = pt.where(in_cooldown, cooling - 1, pt.where(cutting, cooldown, 0.0))
+        next_cooling = pt.where(in_cooldown, cooling - 1, pt.where(cutting, cooldown, 0))
 
         updates[scale] = pt.where(cutting, pt.maximum(scale * factor, min_scale), scale).astype(
             scale.dtype
         )
         updates[best_loss] = pt.where(improved, running_mean, best_loss).astype(best_loss.dtype)
-        updates[waited] = pt.where(deciding & (in_cooldown | cutting), 0.0, counted).astype(
+        updates[waited] = pt.where(deciding & (in_cooldown | cutting), 0, counted).astype(
             waited.dtype
         )
         updates[cooling] = pt.where(deciding, next_cooling, cooling).astype(cooling.dtype)
-        updates[observed] = pt.where(deciding, 0.0, seen).astype(observed.dtype)
+        updates[observed] = pt.where(deciding, 0, seen).astype(observed.dtype)
         updates[mean_loss] = pt.where(deciding, 0.0, running_mean).astype(mean_loss.dtype)
 
         return updates

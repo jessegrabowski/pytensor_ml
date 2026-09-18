@@ -1,5 +1,6 @@
 from itertools import pairwise
 
+import cloudpickle
 import numpy as np
 import pytensor.tensor as pt
 import pytest
@@ -108,9 +109,10 @@ def test_a_plateau_policy_composes_with_a_schedule():
     assert int(clock.get_value()) == 6
 
 
-def test_a_guard_keeps_a_scheduled_rate_advancing_through_a_skip():
-    """A schedule reads the clock the rule counts on, and the guard exempts clocks from the freeze, so a
-    skipped step still consumes a step and the next batch gets the next rate on the curve."""
+def test_a_guard_holds_the_rule_clock_back_through_a_skip():
+    """The rule's clock counts the updates the rule applied, and a skipped step is one it did not. A clock
+    that counted it anyway would bias-correct the next step against a moment that never saw it, so the
+    schedule reading that clock pauses for the step too."""
     p, loss = quadratic_problem()
     step = compile_train(loss, apply_if_finite(adam(cosine_schedule(0.1, 10))))
     clock = state_named(step, "adam/step_count")
@@ -119,8 +121,23 @@ def test_a_guard_keeps_a_scheduled_rate_advancing_through_a_skip():
     step(BAD)
     step(GOOD)
 
-    assert int(clock.get_value()) == 3
+    assert int(clock.get_value()) == 2
     assert np.all(np.isfinite(p.get_value()))
+
+
+def test_a_guard_leaves_a_caller_held_clock_counting_through_a_skip():
+    """A clock the caller holds is not the rule's state, so the guard does not touch it: it counts the
+    calls made, skipped or not, which is the other notion of time and the caller's to keep."""
+    p, loss = quadratic_problem()
+    clock = step_counter("batches")
+    step = compile_train(loss, apply_if_finite(adam(cosine_schedule(0.1, 10)(clock))))
+
+    step(GOOD)
+    step(BAD)
+    step(GOOD)
+
+    assert int(clock.get_value()) == 3
+    assert int(state_named(step, "adam/step_count").get_value()) == 2
 
 
 def test_weight_decay_still_reaches_a_step_the_guard_lets_through():
@@ -189,3 +206,18 @@ def test_two_scheduled_scales_sharing_a_namespace_collide_loudly():
         scale_by_schedule(schedule, namespace="decay"),
     )
     compile_train(loss, apart)
+
+
+def test_a_configured_rule_ships_through_cloudpickle_and_trains_after():
+    """A fit config that carries a configured rule to a remote worker goes through cloudpickle, which
+    serializes a nested function's globals by value. A rule holds hyperparameters and nothing else, so the
+    whole spine ships, and the state it allocates on the worker is the worker's."""
+    rule = skip_if(chain(adam(cosine_schedule(1e-2, 1000)), clip_by_global_norm(10.0)))
+    restored = cloudpickle.loads(cloudpickle.dumps(rule))
+
+    p, loss = quadratic_problem()
+    step = compile_train(loss, restored)
+    before = step(GOOD)
+    step(GOOD)
+
+    assert step(GOOD) < before

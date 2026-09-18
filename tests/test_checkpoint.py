@@ -12,7 +12,7 @@ from safetensors.numpy import load_file, save_file
 from pytensor_ml.checkpoint import generator_from_state, load_state, save_state
 from pytensor_ml.layers import BatchNorm, Dropout, Linear, Sequential
 from pytensor_ml.loss import SquaredError, supervised_loss
-from pytensor_ml.optim import adam, sgd
+from pytensor_ml.optim import adadelta, adagrad, adam, cosine_schedule, rmsprop, sgd
 from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import (
     collect_optimizer_state,
@@ -631,3 +631,31 @@ def test_collect_optimizer_state_is_empty_for_a_rule_that_keeps_none():
     parameters = collect_trainable_params(loss)
 
     assert collect_optimizer_state(sgd(learning_rate=1e-2)(loss, parameters), parameters) == []
+
+
+@pytest.mark.parametrize(
+    "alias, clock_name",
+    [
+        (lambda schedule: sgd(learning_rate=schedule), "sgd/step_count"),
+        (lambda schedule: sgd(learning_rate=schedule, momentum=0.9), "sgd/step_count"),
+        (lambda schedule: rmsprop(learning_rate=schedule), "rmsprop/step_count"),
+        (lambda schedule: adagrad(learning_rate=schedule), "adagrad/step_count"),
+        (lambda schedule: adadelta(learning_rate=schedule), "adadelta/step_count"),
+    ],
+    ids=["sgd", "sgd-momentum", "rmsprop", "adagrad", "adadelta"],
+)
+def test_a_scheduled_rule_puts_the_clock_it_reads_in_its_updates(alias, clock_name):
+    """A schedule's clock is state the rule carries between steps, so it has to be in the updates dict a
+    checkpoint is taken from. A rule that read the clock without writing it would train correctly and
+    still hand a checkpoint that restarts the schedule at zero. These are the rules with no step count of
+    their own, and momentum sgd reads the schedule through ``scale``, a separate path."""
+    X = pt.tensor("X", shape=(None, 4))
+    loss, target = supervised_loss(Linear("fc", n_in=4, n_out=1)(X), SquaredError())
+    parameters = collect_trainable_params(loss)
+
+    updates = alias(cosine_schedule(1e-2, total_steps=10))(loss, parameters)
+    clocks = [
+        v.name for v in collect_optimizer_state(updates, parameters) if "step_count" in v.name
+    ]
+
+    assert clocks == [clock_name]

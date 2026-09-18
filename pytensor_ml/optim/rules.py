@@ -3,6 +3,7 @@ from collections.abc import Callable, Sequence
 import pytensor.tensor as pt
 
 from pytensor import config
+from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.basic import Variable
 from pytensor.tensor import TensorVariable
 
@@ -10,20 +11,21 @@ from pytensor_ml.optim.base import (
     LearningRate,
     LossGradientsOrUpdates,
     Parameter,
-    Rate,
     Steps,
     Updates,
-    counter,
     gradients_to_descend,
+    rate_on,
+    read_rate,
     state_for,
     to_floatx,
 )
+from pytensor_ml.params import step_counter
 
 
 def sgd_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 1.0,
+    learning_rate: LearningRate = 1.0,
     namespace: str = "sgd",
 ) -> Updates:
     r"""
@@ -73,19 +75,18 @@ def sgd_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
-    return Steps(incoming).replacing(
-        {
-            parameter: parameter - learning_rate * gradient
-            for parameter, gradient in zip(parameters, gradients)
-        }
-    )
+    learning_rate, clock_update = read_rate(learning_rate, namespace)
+    steps: dict[SharedVariable, TensorVariable] = {
+        parameter: parameter - learning_rate * gradient
+        for parameter, gradient in zip(parameters, gradients)
+    }
+    return Steps(incoming).replacing(clock_update).replacing(steps)
 
 
 def adam_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 1e-3,
+    learning_rate: LearningRate = 1e-3,
     beta1: float = 0.9,
     beta2: float = 0.999,
     epsilon: float = 1e-8,
@@ -166,7 +167,7 @@ def _adam_family_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
     *,
-    learning_rate: Rate,
+    learning_rate: LearningRate,
     beta1: float,
     beta2: float,
     epsilon: float,
@@ -189,9 +190,8 @@ def _adam_family_updates(
         Predicate selecting which parameters the decay reaches. Every parameter when omitted.
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
-
-    step_count = counter(f"{namespace}/step_count")
+    step_count = step_counter(f"{namespace}/step_count")
+    learning_rate = to_floatx(rate_on(learning_rate, step_count))
     new_step_count = step_count + 1
     new_step_count_float = new_step_count.astype(config.floatX)
     first_moment_bias_correction = 1 - beta1**new_step_count_float
@@ -254,7 +254,7 @@ def _running_max_second_moment(
 def adamw_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 1e-3,
+    learning_rate: LearningRate = 1e-3,
     weight_decay: float = 0.01,
     beta1: float = 0.9,
     beta2: float = 0.999,
@@ -344,7 +344,7 @@ def adamw_updates(
 def nadam_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 2e-3,
+    learning_rate: LearningRate = 2e-3,
     beta1: float = 0.9,
     beta2: float = 0.999,
     epsilon: float = 1e-8,
@@ -408,9 +408,8 @@ def nadam_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
-
-    step_count = counter(f"{namespace}/step_count")
+    step_count = step_counter(f"{namespace}/step_count")
+    learning_rate = to_floatx(rate_on(learning_rate, step_count))
     new_step_count = step_count + 1
     new_step_count_float = new_step_count.astype(config.floatX)
     first_moment_bias_correction = 1 - beta1**new_step_count_float
@@ -442,7 +441,7 @@ def nadam_updates(
 def adamax_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 2e-3,
+    learning_rate: LearningRate = 2e-3,
     beta1: float = 0.9,
     beta2: float = 0.999,
     epsilon: float = 1e-8,
@@ -505,9 +504,8 @@ def adamax_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
-
-    step_count = counter(f"{namespace}/step_count")
+    step_count = step_counter(f"{namespace}/step_count")
+    learning_rate = to_floatx(rate_on(learning_rate, step_count))
     new_step_count = step_count + 1
     new_step_count_float = new_step_count.astype(config.floatX)
     first_moment_bias_correction = 1 - beta1**new_step_count_float
@@ -533,7 +531,7 @@ def adamax_updates(
 def adagrad_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 0.01,
+    learning_rate: LearningRate = 0.01,
     epsilon: float = 1e-8,
     namespace: str = "adagrad",
 ) -> Updates:
@@ -588,9 +586,9 @@ def adagrad_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
+    learning_rate, clock_update = read_rate(learning_rate, namespace)
 
-    updates: Updates = Steps(incoming)
+    updates: Updates = Steps(incoming).replacing(clock_update)
     for parameter, gradient in zip(parameters, gradients):
         sum_squared_gradients = state_for(parameter, f"{namespace}/sum_squared_gradients")
         new_sum_squared_gradients = sum_squared_gradients + gradient**2
@@ -605,7 +603,7 @@ def adagrad_updates(
 def rmsprop_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 1e-2,
+    learning_rate: LearningRate = 1e-2,
     rho: float = 0.9,
     momentum: float = 0.0,
     epsilon: float = 1e-8,
@@ -673,9 +671,9 @@ def rmsprop_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
+    learning_rate, clock_update = read_rate(learning_rate, namespace)
 
-    updates: Updates = Steps(incoming)
+    updates: Updates = Steps(incoming).replacing(clock_update)
     for parameter, gradient in zip(parameters, gradients):
         mean_squared_gradient = state_for(parameter, f"{namespace}/mean_squared_gradient")
         new_mean_squared_gradient = rho * mean_squared_gradient + (1 - rho) * gradient**2
@@ -704,7 +702,7 @@ def rmsprop_updates(
 def adadelta_updates(
     loss_gradients_or_updates: LossGradientsOrUpdates,
     parameters: Sequence[Parameter],
-    learning_rate: Rate = 1.0,
+    learning_rate: LearningRate = 1.0,
     rho: float = 0.9,
     epsilon: float = 1e-8,
     namespace: str = "adadelta",
@@ -764,9 +762,9 @@ def adadelta_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    learning_rate = to_floatx(learning_rate)
+    learning_rate, clock_update = read_rate(learning_rate, namespace)
 
-    updates: Updates = Steps(incoming)
+    updates: Updates = Steps(incoming).replacing(clock_update)
     for parameter, gradient in zip(parameters, gradients):
         accumulated_squared_gradient = state_for(
             parameter, f"{namespace}/accumulated_squared_gradient"

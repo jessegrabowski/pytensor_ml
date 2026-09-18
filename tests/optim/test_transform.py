@@ -22,22 +22,6 @@ def test_scale_applies_factor():
     np.testing.assert_allclose(function([], out[p])(), [0.5, -1.0])
 
 
-def test_scale_by_schedule_applies_the_rate_its_clock_reads():
-    p = trainable(np.zeros(2), name="w")
-    updates = {p: p + pt.constant(np.array([2.0, -4.0]))}
-    out = scale_by_schedule(linear_schedule(1.0, total_steps=4, final_learning_rate=0.0))(
-        updates, [p]
-    )
-
-    (clock,) = collect_step_counters(out[p])
-    step = function([], out[p], updates={clock: clock.advance()})
-
-    # The clock starts at zero, where the schedule is still at its initial rate of 1.0.
-    np.testing.assert_allclose(step(), [2.0, -4.0])
-    # One quarter of the horizon later the rate is 0.75.
-    np.testing.assert_allclose(step(), [1.5, -3.0])
-
-
 def test_scale_by_schedule_allocates_a_clock_per_namespace():
     """Two scheduled scales in one graph measure their own time. Sharing a clock by default would make the
     second one's schedule start wherever the first had already advanced it to."""
@@ -52,20 +36,6 @@ def test_scale_by_schedule_allocates_a_clock_per_namespace():
         "decay/step_count",
         "warmup/step_count",
     ]
-
-
-def test_scale_by_schedule_reuses_its_clock_across_invocations():
-    """Two functions compiled from one configured transform must read one clock; a second would restart the
-    schedule at zero while the first kept counting."""
-    p = trainable(np.zeros(1), name="w")
-    transform = scale_by_schedule(linear_schedule(1.0, total_steps=4))
-
-    (first_clock,) = collect_step_counters(transform({p: p + pt.constant(np.array([1.0]))}, [p])[p])
-    (second_clock,) = collect_step_counters(
-        transform({p: p + pt.constant(np.array([1.0]))}, [p])[p]
-    )
-
-    assert first_clock is second_clock
 
 
 def test_trace_accumulates_velocity_with_decay():
@@ -116,19 +86,6 @@ def test_a_rule_headed_chain_composes_again_as_a_rule():
     np.testing.assert_allclose(function([], out[p])(), [1.5])
 
 
-def test_chain_reuses_transform_state_across_invocations():
-    """A chain's transforms allocate state too, so two functions compiled from one chain must share it.
-    Without reuse the second function silently restarts with its own velocity buffer."""
-    p = trainable(np.array([2.0]), name="w")
-    loss = 0.5 * (p**2).sum()
-    rule = chain(trace(0.9), scale(0.1))
-
-    first = {key for key in rule(sgd_updates(loss, [p], learning_rate=1.0), [p]) if key is not p}
-    second = {key for key in rule(sgd_updates(loss, [p], learning_rate=1.0), [p]) if key is not p}
-
-    assert first and first == second
-
-
 def test_separately_configured_chains_keep_independent_state():
     p = trainable(np.array([2.0]), name="w")
     loss = 0.5 * (p**2).sum()
@@ -151,3 +108,18 @@ def test_add_weight_decay_skips_masked_params():
     p = trainable(np.array([4.0]), name="bias")
     out = add_weight_decay(0.1, mask=lambda param: "bias" not in param.name)({p: p}, [p])
     np.testing.assert_allclose(function([], out[p])(), [4.0])
+
+
+def test_scale_takes_a_schedule_where_it_takes_a_factor():
+    """A schedule is a learning rate, so ``scale`` takes one where it takes a float and reads it off a
+    clock of its own, which is what ``scale_by_schedule`` spells out."""
+    p = trainable(np.zeros(2), name="w")
+    updates = {p: p + pt.constant(np.array([2.0, -4.0]))}
+    out = scale(linear_schedule(1.0, total_steps=4, final_learning_rate=0.0))(updates, [p])
+
+    (clock,) = collect_step_counters(out[p])
+    step = function([], out[p], updates={clock: clock.advance()})
+    step()
+
+    assert clock.name == "scale/step_count"
+    np.testing.assert_allclose(step(), [1.5, -3.0])

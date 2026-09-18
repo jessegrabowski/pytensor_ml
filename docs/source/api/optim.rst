@@ -86,9 +86,7 @@ Building blocks
 .. autosummary::
     :toctree: generated/
 
-    counter
     get_gradients
-    reuses_state
     scalar_state
     state_for
     steps_of

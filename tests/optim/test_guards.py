@@ -50,20 +50,44 @@ def test_holds_back_parameters_and_state_on_a_nonfinite_step(poison):
     np.testing.assert_allclose(first_moment.get_value(), moment)
 
 
-def test_resumes_training_where_the_skipped_step_left_it():
+@pytest.mark.parametrize(
+    "make_rule", [lambda: sgd(0.1), lambda: adam(0.1)], ids=["stateless", "bias-corrected"]
+)
+def test_resumes_training_where_the_skipped_step_left_it(make_rule):
     """The skipped step must be a true no-op, not a damped or partial one: two good batches around it have
-    to land exactly where the same two would have landed on their own."""
+    to land exactly where the same two would have landed on their own. Adam is the case that can go
+    wrong quietly, since a step count that advanced through the skip would bias-correct the next step
+    against a moment that never saw it."""
     p, loss = poisonable_problem()
-    guarded = compile_train(loss, apply_if_finite(sgd(0.1)))
+    guarded = compile_train(loss, apply_if_finite(make_rule()))
     for batch in [GOOD, BAD, GOOD]:
         guarded(batch)
 
     reference_p, reference_loss = poisonable_problem()
-    unguarded = compile_train(reference_loss, sgd(0.1))
+    unguarded = compile_train(reference_loss, make_rule())
     for _ in range(2):
         unguarded(GOOD)
 
     np.testing.assert_allclose(p.get_value(), reference_p.get_value())
+
+
+def test_an_infinite_moment_behind_a_finite_parameter_is_skipped():
+    """An overflowed second moment divides adam's step to zero, so the parameter stays finite while the
+    rule is broken for good: every later step is ``finite / inf``. Checking the parameters alone lets that
+    through, and the parameter never moves again."""
+    with config.change_flags(floatX="float32"):
+        gradient = pt.scalar("g", dtype="float32")
+        p = trainable(np.array([2.0], dtype="float32"), name="w")
+        step = compile_train((gradient * p).sum(), apply_if_finite(adam(0.1)))
+
+        step(np.float32(1e30))
+        total_skips = state_named(step, "skip_if/total_skips")
+        second_moment = state_named(step, "w/adam/second_moment")
+
+        assert float(total_skips.get_value()) == 1
+        assert np.isfinite(second_moment.get_value()).all()
+        step(np.float32(1.0))
+        assert p.get_value() < 2.0
 
 
 def test_counts_consecutive_skips_and_resets_on_a_good_step():
@@ -124,18 +148,6 @@ def test_skips_indefinitely_without_a_tolerance():
         step(BAD)
 
     np.testing.assert_allclose(p.get_value(), weights)
-
-
-def test_clocks_advance_through_a_skipped_step():
-    """A skipped step still consumed a step, and a frozen clock would stall every schedule reading it."""
-    p, loss = poisonable_problem()
-    step = compile_train(loss, apply_if_finite(adam(0.1)))
-    clock = state_named(step, "adam/step_count")
-
-    step(GOOD)
-    step(BAD)
-
-    assert int(clock.get_value()) == 2
 
 
 def test_large_step_holds_back_an_outsized_but_finite_step():

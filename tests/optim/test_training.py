@@ -10,7 +10,15 @@ from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, StandardScaler
 from pytensor_ml.activations import LeakyReLU, Tanh
 from pytensor_ml.layers import BatchNorm, Linear, Sequential
 from pytensor_ml.loss import CrossEntropy, SquaredError, supervised_loss
-from pytensor_ml.optim import adam, adamw, compile_train, cosine_schedule, sgd
+from pytensor_ml.optim import (
+    adam,
+    adamw,
+    chain,
+    clip_by_global_norm,
+    compile_train,
+    cosine_schedule,
+    sgd,
+)
 from pytensor_ml.optim.base import state_for
 from pytensor_ml.params import step_counter, trainable
 from pytensor_ml.pytensorf import collect_non_trainable_params, collect_trainable_params
@@ -242,6 +250,40 @@ def test_two_rules_over_different_parameter_groups_train_both():
     np.testing.assert_allclose(bias.get_value(), [3.0 - 0.1], rtol=1e-3)
 
 
+def test_a_rule_keeps_only_the_gradients_it_descends():
+    """Behind a gradient-space transform, each per-group rule is handed every parameter's gradient. A rule
+    that passed the others on inside its Steps dict would have them compile as ``p + g``, an ascent, and
+    the merge below would keep whichever copy came last."""
+    weight = trainable(np.array([2.0]), name="weight")
+    bias = trainable(np.array([3.0]), name="bias")
+    loss = 0.5 * ((weight**2).sum() + (bias**2).sum())
+
+    def per_group(loss_or_gradients, parameters):
+        return {
+            **adam(learning_rate=0.1)(loss_or_gradients, [bias]),
+            **adamw(learning_rate=0.1)(loss_or_gradients, [weight]),
+        }
+
+    step = compile_train(
+        loss, chain(clip_by_global_norm(100.0), per_group), parameters=[weight, bias], inputs=[]
+    )
+    step()
+
+    # The clip's bound is far above the gradient norm, so both first steps are adam's exact sign descent.
+    np.testing.assert_allclose(weight.get_value(), [2.0 - 0.1 * (1 + 0.01 * 2.0)], rtol=1e-3)
+    np.testing.assert_allclose(bias.get_value(), [3.0 - 0.1], rtol=1e-3)
+
+
+def test_an_updates_dict_missing_a_collected_parameter_is_refused():
+    """A dict built over a subset of the parameters would leave the rest untouched with nothing to say so."""
+    weight = trainable(np.array([2.0]), name="weight")
+    bias = trainable(np.array([3.0]), name="bias")
+    loss = 0.5 * ((weight**2).sum() + (bias**2).sum())
+
+    with pytest.raises(ValueError, match=r"No update reaches \['bias'\]"):
+        compile_train(loss, adam(learning_rate=0.1)(loss, [weight]), inputs=[])
+
+
 def test_compile_train_includes_non_trainable_updates():
     # compile_train merges batch-norm running-stat updates that a bare gradient rule would omit.
     X = pt.tensor("X", shape=(None, 4))
@@ -375,16 +417,15 @@ def test_extra_updates_write_state_no_gradient_produces():
 
 
 def test_extra_updates_accept_a_write_that_agrees_with_the_rule():
-    """Two components writing one variable is only a problem when they disagree. A rule builds a fresh
-    expression on every invocation, so an extra update carrying a structurally identical one is the same
-    write said twice -- which is how components share a quantity rather than fight over it."""
+    """Two components writing one variable is only a problem when they disagree. An extra update carrying
+    a structurally identical expression is the same write said twice -- which is how components share a
+    quantity rather than fight over it."""
     p = trainable(np.array([2.0]), name="w")
     loss = 0.5 * (p**2).sum()
-    rule = adam(1e-1)
-    first_invocation = rule(loss, [p])
-    moment = next(key for key in first_invocation if key.name == "w/adam/first_moment")
+    updates = adam(1e-1)(loss, [p])
+    moment = next(key for key in updates if key.name == "w/adam/first_moment")
 
-    step = compile_train(loss, rule, extra_updates={moment: first_invocation[moment]}, inputs=[])
+    step = compile_train(loss, updates, extra_updates={moment: updates[moment]}, inputs=[])
     step()
 
     assert not np.allclose(
@@ -418,11 +459,11 @@ def test_extra_updates_reject_a_write_the_rule_already_makes():
     # run, so the collision has to be loud.
     p = trainable(np.array([2.0]), name="w")
     loss = 0.5 * (p**2).sum()
-    rule = adam(1e-1)
-    first_moment = next(key for key in rule(loss, [p]) if key.name == "w/adam/first_moment")
+    updates = adam(1e-1)(loss, [p])
+    first_moment = next(key for key in updates if key.name == "w/adam/first_moment")
 
     with pytest.raises(ValueError, match="already writes"):
-        compile_train(loss, rule, extra_updates={first_moment: first_moment * 0.0}, inputs=[])
+        compile_train(loss, updates, extra_updates={first_moment: first_moment * 0.0}, inputs=[])
 
 
 def test_extra_updates_reject_a_write_the_model_already_makes():

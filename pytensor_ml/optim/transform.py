@@ -1,17 +1,17 @@
 from collections.abc import Callable, Sequence
 
+from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import (
     Gradients,
+    LearningRate,
     LossGradientsOrUpdates,
     Parameter,
-    Rate,
     Schedule,
     Transform,
     Updates,
-    counter,
-    reuses_state,
+    read_rate,
     state_for,
     steps_of,
     to_updates,
@@ -75,7 +75,6 @@ def trace(decay: float = 0.9, nesterov: bool = False, *, namespace: str = "trace
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def transform(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -94,9 +93,9 @@ def trace(decay: float = 0.9, nesterov: bool = False, *, namespace: str = "trace
     return transform
 
 
-def scale(factor: Rate) -> Transform:
+def scale(factor: LearningRate, *, namespace: str = "scale") -> Transform:
     """
-    Scale each step by a constant factor.
+    Scale each step by a factor, or by a schedule read off a training clock of its own.
 
     Typically the terminal transform in a chain, used to apply the learning rate after a unit-rate base rule.
 
@@ -105,8 +104,11 @@ def scale(factor: Rate) -> Transform:
 
     Parameters
     ----------
-    factor : float or shared tensor variable
-        Multiplier applied to every step.
+    factor : float, shared tensor variable, symbolic scalar, or Schedule
+        Multiplier applied to every step. A schedule is read off the clock ``"{namespace}/step_count"``.
+    namespace : str
+        Prefix for the clock a schedule reads, so two scheduled scalings in one chain keep separate clocks.
+        Default ``"scale"``.
 
     Returns
     -------
@@ -138,12 +140,12 @@ def scale(factor: Rate) -> Transform:
     ) -> Updates:
         updates = to_updates(loss_gradients_or_updates, parameters)
         _reject_gradients(updates, f"scale({factor})")
-        return updates.replacing(
-            {
-                parameter: parameter + factor * step
-                for parameter, step in zip(parameters, steps_of(updates, parameters))
-            }
-        )
+        rate, clock_update = read_rate(factor, namespace)
+        scaled: dict[SharedVariable, TensorVariable] = {
+            parameter: parameter + rate * step
+            for parameter, step in zip(parameters, steps_of(updates, parameters))
+        }
+        return updates.replacing(clock_update).replacing(scaled)
 
     return transform
 
@@ -201,15 +203,7 @@ def scale_by_schedule(schedule: Schedule, *, namespace: str = "scale_by_schedule
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
-    def transform(
-        loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
-    ) -> Updates:
-        updates = to_updates(loss_gradients_or_updates, parameters)
-        _reject_gradients(updates, "scale_by_schedule")
-        return scale(schedule(counter(f"{namespace}/step_count")))(updates, parameters)
-
-    return transform
+    return scale(schedule, namespace=namespace)
 
 
 def add_weight_decay(

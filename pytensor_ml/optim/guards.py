@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import pytensor.tensor as pt
 
 from pytensor.raise_op import CheckAndRaise
@@ -11,11 +12,9 @@ from pytensor_ml.optim.base import (
     Parameter,
     Transform,
     Updates,
-    reuses_state,
     scalar_state,
 )
 from pytensor_ml.optim.checks import checked_scalar
-from pytensor_ml.params import StepCounter
 
 type Decision = Callable[[Updates, Sequence[Parameter]], TensorVariable]
 """
@@ -95,16 +94,18 @@ class SkipCondition:
 
 def nonfinite() -> SkipCondition:
     """
-    Throw the step away when any parameter the rule would write is inf or NaN.
+    Throw the step away when any value the rule would write is inf or NaN.
 
     The condition behind :func:`apply_if_finite`, and the one to reach for when there is no scale to
     threshold on. It fires only once a value has already gone non-finite, which on a diverging run is a
     lagging alarm: the step before is typically finite and enormous. :func:`large_step` catches that one.
 
-    Only the parameters are checked. A policy is free to keep a sentinel among its own state --
+    Optimizer state is checked along with the parameters, because a poisoned moment need not reach its
+    parameter: an infinite second moment divides the step to zero, which is finite, and the parameter then
+    never moves again. Training clocks are integers and are never checked. A variable that is already
+    non-finite when the guard is built is a sentinel rather than a failure --
     :func:`~pytensor_ml.optim.policy.reduce_on_plateau` holds an infinite best-loss until it has seen a full
-    window -- and that is not a step to throw away. Optimizer state cannot hide a NaN for long in any case,
-    since a poisoned moment reaches its parameter on the very next step.
+    window -- and is left alone.
 
     Examples
     --------
@@ -129,8 +130,9 @@ def nonfinite() -> SkipCondition:
     def decide(updates: Updates, parameters: Sequence[Parameter]) -> TensorVariable:
         checked_values = [
             new_value
-            for new_value in (updates[parameter] for parameter in parameters)
+            for variable, new_value in updates.items()
             if new_value.dtype.startswith("float")
+            and bool(np.all(np.isfinite(variable.get_value(borrow=True))))
         ]
         if not checked_values:
             raise ValueError(
@@ -199,7 +201,7 @@ def large_step(max_norm: float | TensorVariable) -> SkipCondition:
 
 def _counter_or_new(given: Parameter | None, name: str) -> Parameter:
     """Return the caller's own counter, or a fresh scalar state slot under ``name``."""
-    return scalar_state(name) if given is None else given
+    return scalar_state(name, dtype="int64") if given is None else given
 
 
 def skip_if(
@@ -220,8 +222,10 @@ def skip_if(
 
     The guard covers what ``rule`` writes and nothing else: a batch-norm running statistic, written by the
     model and folded in by :func:`~pytensor_ml.optim.train.compile_train` outside the rule, is not held back
-    with the step, and the step still returns the loss that produced the skip. Training clocks are exempt
-    too -- a skipped step still consumed a step, so the schedules reading them advance as usual.
+    with the step, and the step still returns the loss that produced the skip. The rule's own clock is held
+    back with the rest, since it counts the updates the rule applied and a skipped one was not: a count that
+    advanced anyway would bias-correct the next step against a moment that never saw it. A clock the caller
+    holds and passes into a schedule is not the rule's state, so it keeps counting calls, skipped or not.
 
     .. code-block:: python
 
@@ -289,25 +293,19 @@ def skip_if(
     elif not isinstance(condition, SkipCondition):
         condition = SkipCondition(condition)
 
-    @reuses_state
     def guarded(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
         updates = rule(loss_gradients_or_updates, parameters).copy()
-        # Snapshotted before the counters are added, since those are the one thing a skipped step still has
-        # to write: freeze them along with everything else and the guard can never count its way to the
-        # error, which is a silent failure rather than a loud one.
-        held_back = {
-            variable: new_value
-            for variable, new_value in updates.items()
-            if not isinstance(variable, StepCounter)
-        }
+        # Snapshotted before the guard's own counters are added, since those record the skip and are the
+        # one thing a skipped step still writes.
+        held_back = dict(updates)
 
         skipping = condition(updates, parameters)
         consecutive = _counter_or_new(consecutive_skips, f"{namespace}/consecutive_skips")
         total = _counter_or_new(total_skips, f"{namespace}/total_skips")
 
-        next_consecutive = pt.where(skipping, consecutive + 1, 0.0)
+        next_consecutive = pt.where(skipping, consecutive + 1, 0)
         if max_consecutive_skips is not None:
             next_consecutive = CheckAndRaise(
                 FloatingPointError,

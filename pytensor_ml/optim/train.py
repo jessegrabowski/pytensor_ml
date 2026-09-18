@@ -36,7 +36,7 @@ def _inconsistent_update(updates: Updates, variable: SharedVariable, new_value: 
 
 def compile_train(
     loss: TensorVariable,
-    rule: Transform,
+    rule: Transform | Updates,
     *,
     parameters: Sequence[Parameter] | None = None,
     inputs: Sequence[Variable] | None = None,
@@ -56,8 +56,11 @@ def compile_train(
     ----------
     loss : TensorVariable
         Scalar loss to minimize.
-    rule : Transform
-        A configured optimizer ``(loss_gradients_or_updates, parameters) -> Updates``, e.g. ``adam(1e-3)``.
+    rule : Transform or Updates
+        A configured optimizer ``(loss_gradients_or_updates, parameters) -> Updates``, e.g. ``adam(1e-3)``,
+        or the updates dict one invocation of it returned. A rule allocates its state afresh on every
+        invocation, so two training functions that should share momentum are compiled from one dict:
+        ``updates = adam(1e-3)(loss, parameters)``, then ``compile_train(loss, updates, ...)`` twice.
     parameters : sequence of shared tensor variable, optional
         Parameters to optimize. Collected from ``loss`` with :func:`collect_differentiable_params` when
         omitted, so parameters the loss detaches with a stop-gradient are left alone. A detached parameter
@@ -132,7 +135,7 @@ def compile_train(
     if inputs is None:
         inputs = collect_data_inputs([loss, *extra_outputs, *extra_updates.values()])
 
-    result = rule(loss, parameters)
+    result = rule(loss, parameters) if callable(rule) else rule
     if isinstance(result, Gradients):
         raise ValueError(
             "The rule returned gradients rather than the steps to take, so every parameter would move "
@@ -166,21 +169,19 @@ def compile_train(
 
     # Collected from the assembled updates rather than from the loss alone: a clock is read by a schedule
     # or a policy, which live in the updates, where an RNG or a running statistic is read by the model.
+    # Assigned per key rather than merged, for the same invariance reason as the statistics above.
     for clock, next_count in collect_clock_updates(
-        [loss, *extra_outputs, *updates.values()]
+        [loss, *extra_outputs, *updates.values()], already_written=updates
     ).items():
-        written = updates.get(clock)
-        if written is None:
-            updates[clock] = next_count
-        elif equal_computations([written], [next_count]):
-            pass  # the rule advances this clock itself, identically, so its own write stands
-        else:
-            raise ValueError(
-                f"The training clock {clock.name!r} is already advanced by an expression that is not the "
-                "one-step advance. A clock advances once per step, so the two writes cannot both take "
-                "effect; drop yours, or write it as `clock + 1` if it is the same advance spelled "
-                "differently."
-            )
+        updates[clock] = next_count
+
+    unwritten = [parameter.name for parameter in parameters if parameter not in updates]
+    if unwritten:
+        raise ValueError(
+            f"No update reaches {unwritten}. Every parameter collected from the loss, or given in "
+            "`parameters`, needs an entry in the updates, so an updates dict built over a subset of them "
+            "would silently freeze the rest. Leave a parameter out of `parameters` to freeze it on purpose."
+        )
 
     require_unique_state_names(updates)
 

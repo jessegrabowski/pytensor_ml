@@ -1,6 +1,4 @@
 from collections.abc import Callable, Sequence
-from contextvars import ContextVar
-from functools import wraps
 
 import numpy as np
 import pytensor
@@ -12,7 +10,7 @@ from pytensor.graph.op import io_connection_pattern
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
-from pytensor_ml.params import step_counter
+from pytensor_ml.params import StepCounter, TrainableParameter, step_counter
 from pytensor_ml.pytensorf import rewrite_pregrad
 
 type Parameter = TensorSharedVariable
@@ -96,10 +94,8 @@ updates dict also carries optimizer state and training clocks, so touch only the
 ``parameters`` -- rewriting the rest would halve a clock's advance as readily as a step.
 
 One that keeps state of its own allocates it with :func:`state_for` and takes a ``namespace``, so that
-two of them in one chain write to separate buffers rather than colliding at the serialization boundary.
-Wrap it in :func:`reuses_state` to hold those buffers across invocations when it is used outside a chain;
-:func:`chain` gives each of its own members a frame already.
-
+two of them in one chain are told apart at the serialization boundary. Every invocation allocates afresh.
+The updates dict it returns holds the state, so two functions that share state are compiled from one dict.
 
 .. code-block:: python
 
@@ -179,12 +175,12 @@ A shared scalar is the form to reach for when the rate has to change mid-run wit
 
 type LearningRate = Rate | Schedule
 """
-What an optimizer alias accepts as its rate, adding a schedule that drives it on-graph.
+What any ``learning_rate`` accepts: a rate, or a schedule the rule reads off its own training clock.
 
 Examples
 --------
-Every alias takes either form, so a constant can be swapped for a schedule without touching anything
-else:
+Every rule and alias takes either form, so a constant can be swapped for a schedule without touching
+anything else:
 
 .. code-block:: python
 
@@ -193,6 +189,53 @@ else:
     fixed = adam(learning_rate=3e-4)
     scheduled = adam(learning_rate=cosine_schedule(3e-4, total_steps=10_000))
 """
+
+
+def rate_on(learning_rate: LearningRate, clock: StepCounter) -> Rate:
+    """
+    Read a schedule off ``clock``. Any other rate passes through untouched.
+
+    Parameters
+    ----------
+    learning_rate : LearningRate
+        A rate, or a schedule of the step count.
+    clock : StepCounter
+        The training clock a schedule is evaluated at, ordinarily the one the rule counts its own steps on.
+
+    Returns
+    -------
+    rate : Rate
+        The rate as a number or a scalar graph.
+    """
+    return learning_rate(clock) if callable(learning_rate) else learning_rate
+
+
+def read_rate(learning_rate: LearningRate, namespace: str) -> tuple[Rate, Updates]:
+    """
+    Resolve a rate at ``floatX``, reading a schedule off a clock of the caller's own.
+
+    The clock's advance comes back as an update for the caller to write, so the updates dict carries the
+    clock and a checkpoint taken from the dict resumes the schedule where it left off. A plain rate reads
+    no clock, so none is allocated and nothing comes back to write.
+
+    Parameters
+    ----------
+    learning_rate : LearningRate
+        A rate, or a schedule of the step count.
+    namespace : str
+        Prefix of the clock a schedule reads, allocated as ``"{namespace}/step_count"``.
+
+    Returns
+    -------
+    rate : Rate
+        The rate as a number or a scalar graph.
+    clock_update : Updates
+        The clock's one-step advance when a schedule was read, empty otherwise.
+    """
+    if not callable(learning_rate):
+        return to_floatx(learning_rate), Updates()
+    clock = step_counter(f"{namespace}/step_count")
+    return to_floatx(learning_rate(clock)), Updates({clock: clock.advance()})
 
 
 def to_floatx(value: Rate) -> Rate:
@@ -210,8 +253,9 @@ def to_floatx(value: Rate) -> Rate:
 
     Parameters
     ----------
-    value : float or TensorVariable
-        A scalar a rule is about to build into its step.
+    value : float, numpy scalar, or TensorVariable
+        A scalar a rule is about to build into its step. A numpy scalar becomes a Python float, which
+        pytensor folds into the graph at the graph's own dtype, where a ``np.float64`` would widen it.
 
     Examples
     --------
@@ -224,7 +268,11 @@ def to_floatx(value: Rate) -> Rate:
 
         rate = to_floatx(1e-3)
     """
-    return value.astype(pytensor.config.floatX) if isinstance(value, Variable) else value
+    if isinstance(value, Variable):
+        return value.astype(pytensor.config.floatX)
+    if isinstance(value, np.generic | np.ndarray):
+        return float(value)
+    return value
 
 
 def get_gradients(
@@ -383,7 +431,20 @@ def gradients_to_descend(
             "descends along what it reads, so it would negate that step and move the parameters uphill. "
             "Keep one rule in a chain and shape its step with `scale`, `trace`, or a clip after it."
         )
-    return incoming, steps_of(incoming, parameters)
+    gradients = steps_of(incoming, parameters)
+    if isinstance(incoming, Gradients):
+        # A gradient for a parameter this rule does not descend cannot travel on inside a Steps dict: it
+        # would compile as `p + g`, an ascent. Another rule over that parameter reads it from the same
+        # Gradients dict this one did, so dropping it here loses nothing.
+        own_parameters = set(parameters)
+        incoming = Gradients(
+            {
+                key: value
+                for key, value in incoming.items()
+                if key in own_parameters or not isinstance(key, TrainableParameter)
+            }
+        )
+    return incoming, gradients
 
 
 def steps_of(updates: Updates, parameters: Sequence[Parameter]) -> list[TensorVariable]:
@@ -420,94 +481,6 @@ def _unreachable_parameter_names(
     ]
 
 
-# A per-parameter slot, or the bare name of a rule-wide counter.
-type _StateKey = tuple[Parameter, str] | str
-
-# Bound by reuses_state for the duration of one rule invocation; None means "allocate fresh".
-_state_buffers: ContextVar[dict[_StateKey, Parameter] | None] = ContextVar(
-    "optimizer_state_buffers", default=None
-)
-
-# The per-parameter slots claimed so far in the current invocation. Reuse *across* invocations is the
-# whole point of the buffers, but two claims on one slot within a single invocation are two components
-# allocating over each other, which is otherwise invisible.
-_claimed_slots: ContextVar[set[_StateKey] | None] = ContextVar(
-    "optimizer_claimed_slots", default=None
-)
-
-
-def reuses_state[**P, R](builds_updates: Callable[P, R]) -> Callable[P, R]:
-    """
-    Give ``builds_updates`` a private set of optimizer-state buffers, reused on every invocation.
-
-    A configured rule such as ``adam(1e-3)`` reads as a value, so it is natural to compile two training
-    functions from one. Without this, each invocation allocates fresh momentum under the *same* derived
-    name: the two steps then share parameters but not optimizer state, which is silently wrong at runtime
-    and raises only later when both are checkpointed together. The same holds for a composed transform,
-    whose state is likewise allocated per call.
-
-    The buffers are keyed per wrapped callable rather than globally so two independently configured
-    optimizers stay independent. They are bound dynamically because :func:`state_for` is reached several
-    call layers below, and threading a cache down would touch every one of them. Nesting is safe: an inner
-    scope restores the outer one on exit, so a rule's own buffers and its enclosing chain's coexist.
-
-    Parameters
-    ----------
-    builds_updates : callable
-        A rule or transform to wrap. Its buffers live as long as the wrapper does.
-
-    Returns
-    -------
-    with_persistent_state : callable
-        ``builds_updates`` with a buffer scope of its own, matching its signature.
-
-    Examples
-    --------
-    Wrap a hand-written transform that allocates state, so two functions compiled from it drive the same
-    buffers rather than each getting fresh ones. :func:`chain` already does this for its own members:
-
-    .. code-block:: python
-
-        from pytensor_ml.optim import reuses_state, state_for, to_updates
-
-
-        def smooth(decay, namespace="smooth"):
-            @reuses_state
-            def transform(loss_gradients_or_updates, parameters):
-                updates = to_updates(loss_gradients_or_updates, parameters)
-                smoothed = updates.copy()
-                for parameter in parameters:
-                    velocity = state_for(parameter, f"{namespace}/velocity")
-                    smoothed[velocity] = decay * velocity + (updates[parameter] - parameter)
-                    smoothed[parameter] = parameter + smoothed[velocity]
-                return smoothed
-
-            return transform
-    """
-    buffers: dict[_StateKey, Parameter] = {}
-
-    @wraps(builds_updates)
-    def with_persistent_state(*args: P.args, **kwargs: P.kwargs) -> R:
-        token = _state_buffers.set(buffers)
-        claimed_token = _claimed_slots.set(set())
-        try:
-            return builds_updates(*args, **kwargs)
-        finally:
-            _state_buffers.reset(token)
-            _claimed_slots.reset(claimed_token)
-
-    return with_persistent_state
-
-
-def _reuse_or_allocate(key: _StateKey, allocate: Callable[[], Parameter]) -> Parameter:
-    buffers = _state_buffers.get()
-    if buffers is None:
-        return allocate()
-    if key not in buffers:
-        buffers[key] = allocate()
-    return buffers[key]
-
-
 def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Parameter:
     """
     Return the optimizer-state shared variable shaped and typed like ``parameter``.
@@ -517,9 +490,8 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
     callers hold the returned object directly, and reuse within a rule is keyed on the parameter object, so
     two same-named parameters still get distinct buffers rather than silently sharing one.
 
-    Allocates unless the enclosing rule was wrapped in :func:`reuses_state` and already holds this slot.
-    Within one invocation a slot belongs to one component: a second claim on it raises rather than handing
-    two components the same buffer, which only the later writer's updates would survive.
+    A fresh variable on every call. The updates dict a rule returns holds it, so two training functions
+    that share this state are compiled from one updates dict.
 
     Parameters
     ----------
@@ -533,7 +505,7 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
     Returns
     -------
     state : shared tensor variable
-        The buffer for this slot, allocated on the first claim and returned again on later ones.
+        A new buffer for this slot.
 
     Examples
     --------
@@ -556,65 +528,16 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
             "parameter names to identify their state at serialization boundaries; give the parameter a name."
         )
 
-    key = (parameter, slot)
-    claimed = _claimed_slots.get()
-    if claimed is not None:
-        if key in claimed:
-            raise ValueError(
-                f"Two components asked for the {slot!r} state of {parameter.name!r} in one step, so the "
-                "second would allocate over the first and only its writes would survive. Give one of them "
-                "a `namespace` of its own, or wrap it in `reuses_state` so it keeps its own buffers."
-            )
-        claimed.add(key)
-
-    def allocate() -> Parameter:
-        value = parameter.get_value(borrow=True)
-        state = pytensor.shared(np.full_like(value, fill_value), name=f"{parameter.name}/{slot}")
-        # Keeps `Linear_1_W` and `Linear_1_W/adam/first_moment` numbered onto the same layer.
-        state.layer_name = getattr(parameter, "layer_name", None)
-        return state
-
-    return _reuse_or_allocate(key, allocate)
+    value = parameter.get_value(borrow=True)
+    state = pytensor.shared(np.full_like(value, fill_value), name=f"{parameter.name}/{slot}")
+    # Keeps `Linear_1_W` and `Linear_1_W/adam/first_moment` numbered onto the same layer.
+    state.layer_name = getattr(parameter, "layer_name", None)
+    return state
 
 
-def counter(name: str) -> Parameter:
+def scalar_state(name: str, fill_value: float = 0.0, dtype: str | None = None) -> Parameter:
     """
-    Return the training clock a component counts its own steps on.
-
-    Reused across invocations of a rule wrapped in :func:`reuses_state`, so the count keeps advancing. A
-    :class:`~pytensor_ml.params.StepCounter` rather than a plain shared variable, so a schedule can read
-    the same notion of time the rule uses, and :func:`~pytensor_ml.pytensorf.collect_clock_updates` advances
-    it for a caller who does not write the advance themselves.
-
-    Parameters
-    ----------
-    name : str
-        Name of the clock, used to match it at serialization boundaries. Two components given the same
-        name share one clock, which is how a rule and the schedule driving it count the same steps.
-
-    Returns
-    -------
-    clock : StepCounter
-        The step counter under ``name``, allocated on first use and returned again after that.
-
-    Examples
-    --------
-    Read a schedule off a clock of your own, which is what a transform does when it applies a rate after
-    the rule rather than inside it:
-
-    .. code-block:: python
-
-        from pytensor_ml.optim import cosine_schedule, counter
-
-        rate = cosine_schedule(3e-4, total_steps=10_000)(counter("my_transform/step_count"))
-    """
-    return _reuse_or_allocate(name, lambda: step_counter(name))
-
-
-def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
-    """
-    Return a floatX scalar shared variable, reused across invocations of a rule wrapped in
-    :func:`reuses_state`.
+    Allocate a scalar shared variable, at ``floatX`` unless told otherwise.
 
     Parameters
     ----------
@@ -622,6 +545,8 @@ def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
         Name of the variable, used to match it at serialization boundaries.
     fill_value : float
         Value to initialize it with. Default 0.0.
+    dtype : str, optional
+        Storage dtype. Default ``floatX``. A count belongs in an integer dtype.
 
     Examples
     --------
@@ -634,10 +559,7 @@ def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
 
         scale = scalar_state("plateau/scale", fill_value=1.0)
     """
-    return _reuse_or_allocate(
-        name,
-        lambda: pytensor.shared(np.asarray(fill_value, dtype=pytensor.config.floatX), name=name),
-    )
+    return pytensor.shared(np.asarray(fill_value, dtype=dtype or pytensor.config.floatX), name=name)
 
 
 def require_unique_state_names(updates: Updates) -> None:
@@ -684,9 +606,6 @@ def chain(*transforms: Transform) -> Transform:
 
     A chain is itself a transform, so one composes into another and the result is flat.
 
-    The composed callable owns one set of optimizer-state buffers however many times it is invoked, so two
-    training functions compiled from one chain share its momentum rather than each allocating their own.
-
     Parameters
     ----------
     *transforms : Transform
@@ -728,17 +647,11 @@ def chain(*transforms: Transform) -> Transform:
     if not transforms:
         raise ValueError("chain needs at least one transform.")
 
-    # Each member gets a buffer frame of its own, made once here. Without it a transform that allocates
-    # state without wrapping itself falls through to the chain's frame, where a second such transform
-    # would claim the same slot and quietly take it over.
-    staged = tuple(reuses_state(transform) for transform in transforms)
-
-    @reuses_state
     def combined(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        updates = staged[0](loss_gradients_or_updates, parameters)
-        for transform in staged[1:]:
+        updates = transforms[0](loss_gradients_or_updates, parameters)
+        for transform in transforms[1:]:
             updates = transform(updates, parameters)
         return updates
 
