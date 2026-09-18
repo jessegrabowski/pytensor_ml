@@ -208,7 +208,7 @@ def test_two_scheduled_scales_sharing_a_namespace_collide_loudly():
     compile_train(loss, apart)
 
 
-def test_an_unused_rule_ships_through_cloudpickle_and_trains_after():
+def test_a_configured_rule_ships_through_cloudpickle_and_trains_after():
     """A fit config that carries a configured rule to a remote worker goes through cloudpickle, which
     serializes a nested function's globals by value. A rule holds hyperparameters and nothing else, so the
     whole spine ships, and the state it allocates on the worker is the worker's."""
