@@ -36,7 +36,7 @@ def _inconsistent_update(updates: Updates, variable: SharedVariable, new_value: 
 
 def compile_train(
     loss: TensorVariable,
-    rule: Transform,
+    rule: Transform | Updates,
     *,
     parameters: Sequence[Parameter] | None = None,
     inputs: Sequence[Variable] | None = None,
@@ -56,8 +56,11 @@ def compile_train(
     ----------
     loss : TensorVariable
         Scalar loss to minimize.
-    rule : Transform
-        A configured optimizer ``(loss_gradients_or_updates, parameters) -> Updates``, e.g. ``adam(1e-3)``.
+    rule : Transform or Updates
+        A configured optimizer ``(loss_gradients_or_updates, parameters) -> Updates``, e.g. ``adam(1e-3)``,
+        or the updates dict one invocation of it returned. A rule allocates its state afresh on every
+        invocation, so two training functions that should share momentum are compiled from one dict:
+        ``updates = adam(1e-3)(loss, parameters)``, then ``compile_train(loss, updates, ...)`` twice.
     parameters : sequence of shared tensor variable, optional
         Parameters to optimize. Collected from ``loss`` with :func:`collect_differentiable_params` when
         omitted, so parameters the loss detaches with a stop-gradient are left alone. A detached parameter
@@ -132,7 +135,7 @@ def compile_train(
     if inputs is None:
         inputs = collect_data_inputs([loss, *extra_outputs, *extra_updates.values()])
 
-    result = rule(loss, parameters)
+    result = rule(loss, parameters) if callable(rule) else rule
     if isinstance(result, Gradients):
         raise ValueError(
             "The rule returned gradients rather than the steps to take, so every parameter would move "

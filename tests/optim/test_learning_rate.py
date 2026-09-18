@@ -318,12 +318,12 @@ def test_a_user_clock_out_of_step_with_a_rule_clock_is_caught():
     only one of them leaves the two measuring different times."""
     p, loss = quadratic_problem()
     their_clock = step_counter("their_clock")
-    rule = adam(learning_rate=0.1)
-    adam_clock = next(key for key in rule(loss, [p]) if key.name == "adam/step_count")
+    updates = adam(learning_rate=0.1)(loss, [p])
+    adam_clock = next(key for key in updates if key.name == "adam/step_count")
     adam_clock.set_value(np.asarray(37, dtype="int64"))
 
     with pytest.raises(ValueError, match="hold different step counts"):
-        compile_train(loss, rule, extra_outputs=[their_clock.astype("float64")])
+        compile_train(loss, updates, extra_outputs=[their_clock.astype("float64")])
 
 
 @pytest.mark.parametrize(

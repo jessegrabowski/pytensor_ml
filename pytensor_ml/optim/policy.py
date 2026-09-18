@@ -12,7 +12,6 @@ from pytensor_ml.optim.base import (
     Steps,
     Transform,
     Updates,
-    reuses_state,
     scalar_state,
 )
 from pytensor_ml.optim.checks import checked_scalar
@@ -134,7 +133,6 @@ def reduce_on_plateau(
         condition_fn=lambda value: value >= 1,
     )
 
-    @reuses_state
     def policy(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:

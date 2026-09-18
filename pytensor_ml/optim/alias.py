@@ -6,7 +6,6 @@ from pytensor_ml.optim.base import (
     Parameter,
     Transform,
     Updates,
-    reuses_state,
 )
 from pytensor_ml.optim.rules import (
     _require_numeric_learning_rate,
@@ -70,15 +69,10 @@ def sgd(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    # Built once here rather than per invocation, so the velocity it owns is the same buffer on every
-    # step compiled from this rule instead of a fresh one each time.
-    momentum_trace = trace(momentum, nesterov) if momentum else None
-
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        if momentum_trace is None:
+        if not momentum:
             return sgd_updates(
                 loss_gradients_or_updates,
                 parameters,
@@ -91,7 +85,7 @@ def sgd(
             learning_rate=1.0,
             namespace=namespace,
         )
-        updates = momentum_trace(updates, parameters)
+        updates = trace(momentum, nesterov)(updates, parameters)
         return scale(learning_rate, namespace=namespace)(updates, parameters)
 
     return rule
@@ -132,7 +126,6 @@ def adam(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -188,7 +181,6 @@ def adamw(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -243,7 +235,6 @@ def nadam(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -295,7 +286,6 @@ def adamax(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -350,7 +340,6 @@ def rprop(
     """
     _require_numeric_learning_rate(learning_rate)
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -403,7 +392,6 @@ def rmsprop(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -453,7 +441,6 @@ def adagrad(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -501,7 +488,6 @@ def adadelta(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:

@@ -11,7 +11,6 @@ from pytensor_ml.optim.base import (
     Parameter,
     Transform,
     Updates,
-    reuses_state,
     scalar_state,
 )
 from pytensor_ml.optim.checks import checked_scalar
@@ -289,7 +288,6 @@ def skip_if(
     elif not isinstance(condition, SkipCondition):
         condition = SkipCondition(condition)
 
-    @reuses_state
     def guarded(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:

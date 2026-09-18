@@ -375,16 +375,15 @@ def test_extra_updates_write_state_no_gradient_produces():
 
 
 def test_extra_updates_accept_a_write_that_agrees_with_the_rule():
-    """Two components writing one variable is only a problem when they disagree. A rule builds a fresh
-    expression on every invocation, so an extra update carrying a structurally identical one is the same
-    write said twice -- which is how components share a quantity rather than fight over it."""
+    """Two components writing one variable is only a problem when they disagree. An extra update carrying
+    a structurally identical expression is the same write said twice -- which is how components share a
+    quantity rather than fight over it."""
     p = trainable(np.array([2.0]), name="w")
     loss = 0.5 * (p**2).sum()
-    rule = adam(1e-1)
-    first_invocation = rule(loss, [p])
-    moment = next(key for key in first_invocation if key.name == "w/adam/first_moment")
+    updates = adam(1e-1)(loss, [p])
+    moment = next(key for key in updates if key.name == "w/adam/first_moment")
 
-    step = compile_train(loss, rule, extra_updates={moment: first_invocation[moment]}, inputs=[])
+    step = compile_train(loss, updates, extra_updates={moment: updates[moment]}, inputs=[])
     step()
 
     assert not np.allclose(
@@ -418,11 +417,11 @@ def test_extra_updates_reject_a_write_the_rule_already_makes():
     # run, so the collision has to be loud.
     p = trainable(np.array([2.0]), name="w")
     loss = 0.5 * (p**2).sum()
-    rule = adam(1e-1)
-    first_moment = next(key for key in rule(loss, [p]) if key.name == "w/adam/first_moment")
+    updates = adam(1e-1)(loss, [p])
+    first_moment = next(key for key in updates if key.name == "w/adam/first_moment")
 
     with pytest.raises(ValueError, match="already writes"):
-        compile_train(loss, rule, extra_updates={first_moment: first_moment * 0.0}, inputs=[])
+        compile_train(loss, updates, extra_updates={first_moment: first_moment * 0.0}, inputs=[])
 
 
 def test_extra_updates_reject_a_write_the_model_already_makes():

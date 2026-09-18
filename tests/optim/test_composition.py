@@ -1,5 +1,6 @@
 from itertools import pairwise
 
+import cloudpickle
 import numpy as np
 import pytensor.tensor as pt
 import pytest
@@ -189,3 +190,18 @@ def test_two_scheduled_scales_sharing_a_namespace_collide_loudly():
         scale_by_schedule(schedule, namespace="decay"),
     )
     compile_train(loss, apart)
+
+
+def test_an_unused_rule_ships_through_cloudpickle_and_trains_after():
+    """A fit config that carries a configured rule to a remote worker goes through cloudpickle, which
+    serializes a nested function's globals by value. A rule holds hyperparameters and nothing else, so the
+    whole spine ships, and the state it allocates on the worker is the worker's."""
+    rule = skip_if(chain(adam(cosine_schedule(1e-2, 1000)), clip_by_global_norm(10.0)))
+    restored = cloudpickle.loads(cloudpickle.dumps(rule))
+
+    p, loss = quadratic_problem()
+    step = compile_train(loss, restored)
+    before = step(GOOD)
+    step(GOOD)
+
+    assert step(GOOD) < before

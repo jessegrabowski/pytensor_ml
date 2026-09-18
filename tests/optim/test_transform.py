@@ -54,20 +54,6 @@ def test_scale_by_schedule_allocates_a_clock_per_namespace():
     ]
 
 
-def test_scale_by_schedule_reuses_its_clock_across_invocations():
-    """Two functions compiled from one configured transform must read one clock; a second would restart the
-    schedule at zero while the first kept counting."""
-    p = trainable(np.zeros(1), name="w")
-    transform = scale_by_schedule(linear_schedule(1.0, total_steps=4))
-
-    (first_clock,) = collect_step_counters(transform({p: p + pt.constant(np.array([1.0]))}, [p])[p])
-    (second_clock,) = collect_step_counters(
-        transform({p: p + pt.constant(np.array([1.0]))}, [p])[p]
-    )
-
-    assert first_clock is second_clock
-
-
 def test_trace_accumulates_velocity_with_decay():
     p = trainable(np.zeros(1), name="w")
     out = trace(0.9)({p: p + pt.constant(np.array([1.0]))}, [p])
@@ -114,19 +100,6 @@ def test_a_rule_headed_chain_composes_again_as_a_rule():
 
     # Two nested halvings of a step of -2 leave p = 2 - 0.5.
     np.testing.assert_allclose(function([], out[p])(), [1.5])
-
-
-def test_chain_reuses_transform_state_across_invocations():
-    """A chain's transforms allocate state too, so two functions compiled from one chain must share it.
-    Without reuse the second function silently restarts with its own velocity buffer."""
-    p = trainable(np.array([2.0]), name="w")
-    loss = 0.5 * (p**2).sum()
-    rule = chain(trace(0.9), scale(0.1))
-
-    first = {key for key in rule(sgd_updates(loss, [p], learning_rate=1.0), [p]) if key is not p}
-    second = {key for key in rule(sgd_updates(loss, [p], learning_rate=1.0), [p]) if key is not p}
-
-    assert first and first == second
 
 
 def test_separately_configured_chains_keep_independent_state():

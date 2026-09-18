@@ -16,9 +16,7 @@ def test_exported_names_are_unique_and_sorted():
     assert optim.__all__ == sorted(set(optim.__all__))
 
 
-@pytest.mark.parametrize(
-    "name", ["to_updates", "steps_of", "state_for", "reuses_state", "counter", "chain"]
-)
+@pytest.mark.parametrize("name", ["to_updates", "steps_of", "state_for", "counter", "chain"])
 def test_the_transform_authoring_api_stays_public(name):
     """The ``Transform`` docstring tells authors to write a transform with these. Dropping one from
     ``__all__`` would leave the documented path running through ``pytensor_ml.optim.base``."""

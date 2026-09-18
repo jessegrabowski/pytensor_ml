@@ -295,11 +295,10 @@ def test_sgd_names_the_step_counter_its_schedule_reads():
     [lambda: adam(learning_rate=1e-2), lambda: sgd(learning_rate=1e-2, momentum=0.9)],
     ids=["state_from_a_rule", "state_from_a_transform"],
 )
-def test_reused_rule_shares_its_optimizer_state(make_rule):
-    """A configured rule reads as a value, so compiling two training functions from one is natural. Both
-    must drive the same buffers: separate ones under the same derived name are silently wrong at runtime,
-    and collide only later when both are checkpointed together. Momentum SGD is included because its
-    velocity comes from a transform rather than the rule, which is a separate allocation path."""
+def test_each_invocation_of_a_rule_allocates_its_own_state(make_rule):
+    """A rule builds a graph, and the graph holds the state. Two invocations are two optimizers, so the
+    buffers they allocate are distinct objects even though their derived names agree. Momentum SGD is
+    included because its velocity comes from a transform rather than the rule, a separate allocation path."""
     p = trainable(np.zeros(3), name="w")
     loss = (p**2).sum()
     rule = make_rule()
@@ -307,21 +306,22 @@ def test_reused_rule_shares_its_optimizer_state(make_rule):
     first = {key for key in rule(loss, [p]) if key is not p}
     second = {key for key in rule(loss, [p]) if key is not p}
 
-    assert first and first == second
+    assert first and not first & second
 
 
-def test_two_functions_from_one_rule_continue_the_same_momentum():
-    """What the shared buffers buy: the second function continues the first's trajectory instead of
-    restarting it. Under a constant gradient, momentum SGD's step at iteration ``t`` is
-    ``lr * g * (1 - m**t) / (1 - m)``, so a continued second step is 1.9x a restarted one at ``m = 0.9``."""
+def test_two_functions_from_one_updates_dict_continue_the_same_momentum():
+    """Two training functions share state by being compiled from one updates dict. The second then
+    continues the first's trajectory instead of restarting it. Under a constant gradient, momentum SGD's
+    step at iteration ``t`` is ``lr * g * (1 - m**t) / (1 - m)``, so a continued second step is 1.9x a
+    restarted one at ``m = 0.9``."""
     p = trainable(np.zeros(2), name="w")
     gradient = np.array([2.0, -0.5])
     loss = (pt.constant(gradient, dtype=floatX) * p).sum()  # constant gradient, independent of p
     learning_rate, momentum = 0.1, 0.9
-    rule = sgd(learning_rate=learning_rate, momentum=momentum)
+    updates = sgd(learning_rate=learning_rate, momentum=momentum)(loss, [p])
 
-    step_once = function([], loss, updates=rule(loss, [p]))
-    step_again = function([], loss, updates=rule(loss, [p]))
+    step_once = function([], loss, updates=updates)
+    step_again = function([], loss, updates=updates)
 
     step_once()
     before = p.get_value().copy()
@@ -329,18 +329,6 @@ def test_two_functions_from_one_rule_continue_the_same_momentum():
 
     continued = -learning_rate * gradient * (1 - momentum**2) / (1 - momentum)
     np.testing.assert_allclose(p.get_value() - before, continued, rtol=RTOL)
-
-
-def test_separately_configured_rules_keep_independent_state():
-    """Buffers are memoized per rule, not globally, so two optimizers over the same parameter do not
-    quietly train through each other's momentum."""
-    p = trainable(np.zeros(3), name="w")
-    loss = (p**2).sum()
-
-    first = {key for key in adam(learning_rate=1e-2)(loss, [p]) if key is not p}
-    second = {key for key in adam(learning_rate=1e-2)(loss, [p]) if key is not p}
-
-    assert not first & second
 
 
 def test_adamw_first_step_applies_decoupled_decay():

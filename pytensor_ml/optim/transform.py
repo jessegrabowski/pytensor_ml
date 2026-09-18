@@ -12,7 +12,6 @@ from pytensor_ml.optim.base import (
     Transform,
     Updates,
     read_rate,
-    reuses_state,
     state_for,
     steps_of,
     to_updates,
@@ -76,7 +75,6 @@ def trace(decay: float = 0.9, nesterov: bool = False, *, namespace: str = "trace
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def transform(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
@@ -137,7 +135,6 @@ def scale(factor: LearningRate, *, namespace: str = "scale") -> Transform:
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
 
-    @reuses_state
     def transform(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:

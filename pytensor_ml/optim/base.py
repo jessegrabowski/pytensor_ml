@@ -1,6 +1,4 @@
 from collections.abc import Callable, Sequence
-from contextvars import ContextVar
-from functools import wraps
 
 import numpy as np
 import pytensor
@@ -96,10 +94,8 @@ updates dict also carries optimizer state and training clocks, so touch only the
 ``parameters`` -- rewriting the rest would halve a clock's advance as readily as a step.
 
 One that keeps state of its own allocates it with :func:`state_for` and takes a ``namespace``, so that
-two of them in one chain write to separate buffers rather than colliding at the serialization boundary.
-Wrap it in :func:`reuses_state` to hold those buffers across invocations when it is used outside a chain;
-:func:`chain` gives each of its own members a frame already.
-
+two of them in one chain are told apart at the serialization boundary. Every invocation allocates afresh.
+The updates dict it returns holds the state, so two functions that share state are compiled from one dict.
 
 .. code-block:: python
 
@@ -467,94 +463,6 @@ def _unreachable_parameter_names(
     ]
 
 
-# A per-parameter slot, or the bare name of a rule-wide counter.
-type _StateKey = tuple[Parameter, str] | str
-
-# Bound by reuses_state for the duration of one rule invocation; None means "allocate fresh".
-_state_buffers: ContextVar[dict[_StateKey, Parameter] | None] = ContextVar(
-    "optimizer_state_buffers", default=None
-)
-
-# The per-parameter slots claimed so far in the current invocation. Reuse *across* invocations is the
-# whole point of the buffers, but two claims on one slot within a single invocation are two components
-# allocating over each other, which is otherwise invisible.
-_claimed_slots: ContextVar[set[_StateKey] | None] = ContextVar(
-    "optimizer_claimed_slots", default=None
-)
-
-
-def reuses_state[**P, R](builds_updates: Callable[P, R]) -> Callable[P, R]:
-    """
-    Give ``builds_updates`` a private set of optimizer-state buffers, reused on every invocation.
-
-    A configured rule such as ``adam(1e-3)`` reads as a value, so it is natural to compile two training
-    functions from one. Without this, each invocation allocates fresh momentum under the *same* derived
-    name: the two steps then share parameters but not optimizer state, which is silently wrong at runtime
-    and raises only later when both are checkpointed together. The same holds for a composed transform,
-    whose state is likewise allocated per call.
-
-    The buffers are keyed per wrapped callable rather than globally so two independently configured
-    optimizers stay independent. They are bound dynamically because :func:`state_for` is reached several
-    call layers below, and threading a cache down would touch every one of them. Nesting is safe: an inner
-    scope restores the outer one on exit, so a rule's own buffers and its enclosing chain's coexist.
-
-    Parameters
-    ----------
-    builds_updates : callable
-        A rule or transform to wrap. Its buffers live as long as the wrapper does.
-
-    Returns
-    -------
-    with_persistent_state : callable
-        ``builds_updates`` with a buffer scope of its own, matching its signature.
-
-    Examples
-    --------
-    Wrap a hand-written transform that allocates state, so two functions compiled from it drive the same
-    buffers rather than each getting fresh ones. :func:`chain` already does this for its own members:
-
-    .. code-block:: python
-
-        from pytensor_ml.optim import reuses_state, state_for, to_updates
-
-
-        def smooth(decay, namespace="smooth"):
-            @reuses_state
-            def transform(loss_gradients_or_updates, parameters):
-                updates = to_updates(loss_gradients_or_updates, parameters)
-                smoothed = updates.copy()
-                for parameter in parameters:
-                    velocity = state_for(parameter, f"{namespace}/velocity")
-                    smoothed[velocity] = decay * velocity + (updates[parameter] - parameter)
-                    smoothed[parameter] = parameter + smoothed[velocity]
-                return smoothed
-
-            return transform
-    """
-    buffers: dict[_StateKey, Parameter] = {}
-
-    @wraps(builds_updates)
-    def with_persistent_state(*args: P.args, **kwargs: P.kwargs) -> R:
-        token = _state_buffers.set(buffers)
-        claimed_token = _claimed_slots.set(set())
-        try:
-            return builds_updates(*args, **kwargs)
-        finally:
-            _state_buffers.reset(token)
-            _claimed_slots.reset(claimed_token)
-
-    return with_persistent_state
-
-
-def _reuse_or_allocate(key: _StateKey, allocate: Callable[[], Parameter]) -> Parameter:
-    buffers = _state_buffers.get()
-    if buffers is None:
-        return allocate()
-    if key not in buffers:
-        buffers[key] = allocate()
-    return buffers[key]
-
-
 def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Parameter:
     """
     Return the optimizer-state shared variable shaped and typed like ``parameter``.
@@ -564,9 +472,8 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
     callers hold the returned object directly, and reuse within a rule is keyed on the parameter object, so
     two same-named parameters still get distinct buffers rather than silently sharing one.
 
-    Allocates unless the enclosing rule was wrapped in :func:`reuses_state` and already holds this slot.
-    Within one invocation a slot belongs to one component: a second claim on it raises rather than handing
-    two components the same buffer, which only the later writer's updates would survive.
+    A fresh variable on every call. The updates dict a rule returns holds it, so two training functions
+    that share this state are compiled from one updates dict.
 
     Parameters
     ----------
@@ -580,7 +487,7 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
     Returns
     -------
     state : shared tensor variable
-        The buffer for this slot, allocated on the first claim and returned again on later ones.
+        A new buffer for this slot.
 
     Examples
     --------
@@ -603,46 +510,30 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
             "parameter names to identify their state at serialization boundaries; give the parameter a name."
         )
 
-    key = (parameter, slot)
-    claimed = _claimed_slots.get()
-    if claimed is not None:
-        if key in claimed:
-            raise ValueError(
-                f"Two components asked for the {slot!r} state of {parameter.name!r} in one step, so the "
-                "second would allocate over the first and only its writes would survive. Give one of them "
-                "a `namespace` of its own, or wrap it in `reuses_state` so it keeps its own buffers."
-            )
-        claimed.add(key)
-
-    def allocate() -> Parameter:
-        value = parameter.get_value(borrow=True)
-        state = pytensor.shared(np.full_like(value, fill_value), name=f"{parameter.name}/{slot}")
-        # Keeps `Linear_1_W` and `Linear_1_W/adam/first_moment` numbered onto the same layer.
-        state.layer_name = getattr(parameter, "layer_name", None)
-        return state
-
-    return _reuse_or_allocate(key, allocate)
+    value = parameter.get_value(borrow=True)
+    state = pytensor.shared(np.full_like(value, fill_value), name=f"{parameter.name}/{slot}")
+    # Keeps `Linear_1_W` and `Linear_1_W/adam/first_moment` numbered onto the same layer.
+    state.layer_name = getattr(parameter, "layer_name", None)
+    return state
 
 
 def counter(name: str) -> Parameter:
     """
-    Return the training clock a component counts its own steps on.
+    Allocate the training clock a component counts its own steps on.
 
-    Reused across invocations of a rule wrapped in :func:`reuses_state`, so the count keeps advancing. A
-    :class:`~pytensor_ml.params.StepCounter` rather than a plain shared variable, so a schedule can read
+    A :class:`~pytensor_ml.params.StepCounter` rather than a plain shared variable, so a schedule can read
     the same notion of time the rule uses, and :func:`~pytensor_ml.pytensorf.collect_clock_updates` advances
     it for a caller who does not write the advance themselves.
 
     Parameters
     ----------
     name : str
-        Name of the clock, used to match it at serialization boundaries. Two components given the same
-        name share one clock, which is how a rule and the schedule driving it count the same steps.
+        Name of the clock, used to match it at serialization boundaries.
 
     Returns
     -------
     clock : StepCounter
-        The step counter under ``name``, allocated on first use and returned again after that.
+        A new step counter under ``name``.
 
     Examples
     --------
@@ -655,13 +546,12 @@ def counter(name: str) -> Parameter:
 
         rate = cosine_schedule(3e-4, total_steps=10_000)(counter("my_transform/step_count"))
     """
-    return _reuse_or_allocate(name, lambda: step_counter(name))
+    return step_counter(name)
 
 
 def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
     """
-    Return a floatX scalar shared variable, reused across invocations of a rule wrapped in
-    :func:`reuses_state`.
+    Allocate a floatX scalar shared variable.
 
     Parameters
     ----------
@@ -681,10 +571,7 @@ def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
 
         scale = scalar_state("plateau/scale", fill_value=1.0)
     """
-    return _reuse_or_allocate(
-        name,
-        lambda: pytensor.shared(np.asarray(fill_value, dtype=pytensor.config.floatX), name=name),
-    )
+    return pytensor.shared(np.asarray(fill_value, dtype=pytensor.config.floatX), name=name)
 
 
 def require_unique_state_names(updates: Updates) -> None:
@@ -731,9 +618,6 @@ def chain(*transforms: Transform) -> Transform:
 
     A chain is itself a transform, so one composes into another and the result is flat.
 
-    The composed callable owns one set of optimizer-state buffers however many times it is invoked, so two
-    training functions compiled from one chain share its momentum rather than each allocating their own.
-
     Parameters
     ----------
     *transforms : Transform
@@ -775,17 +659,11 @@ def chain(*transforms: Transform) -> Transform:
     if not transforms:
         raise ValueError("chain needs at least one transform.")
 
-    # Each member gets a buffer frame of its own, made once here. Without it a transform that allocates
-    # state without wrapping itself falls through to the chain's frame, where a second such transform
-    # would claim the same slot and quietly take it over.
-    staged = tuple(reuses_state(transform) for transform in transforms)
-
-    @reuses_state
     def combined(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        updates = staged[0](loss_gradients_or_updates, parameters)
-        for transform in staged[1:]:
+        updates = transforms[0](loss_gradients_or_updates, parameters)
+        for transform in transforms[1:]:
             updates = transform(updates, parameters)
         return updates
 

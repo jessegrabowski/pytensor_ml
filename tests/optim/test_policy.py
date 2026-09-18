@@ -214,9 +214,9 @@ def test_the_decision_is_made_on_the_window_mean_not_its_last_loss():
     the loss is exactly what is fed and the policy's own state is all that changes."""
     loss = pt.scalar("loss")
     scale = scalar_state("plateau/scale", fill_value=1.0)
-    rule = reduce_on_plateau(adam(learning_rate=scale), scale, accumulation_size=2)
-    best_loss = next(v for v in rule(loss, []) if v.name == "plateau/best_loss")
-    step = compile_train(loss, rule, parameters=[], inputs=[loss])
+    updates = reduce_on_plateau(adam(learning_rate=scale), scale, accumulation_size=2)(loss, [])
+    best_loss = next(v for v in updates if v.name == "plateau/best_loss")
+    step = compile_train(loss, updates, parameters=[], inputs=[loss])
 
     step(np.asarray(4.0, dtype=config.floatX))
     step(np.asarray(0.0, dtype=config.floatX))
