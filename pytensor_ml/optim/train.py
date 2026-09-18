@@ -185,6 +185,14 @@ def compile_train(
                 "differently."
             )
 
+    unwritten = [parameter.name for parameter in parameters if parameter not in updates]
+    if unwritten:
+        raise ValueError(
+            f"No update reaches {unwritten}. Every parameter collected from the loss, or given in "
+            "`parameters`, needs an entry in the updates, so an updates dict built over a subset of them "
+            "would silently freeze the rest. Leave a parameter out of `parameters` to freeze it on purpose."
+        )
+
     require_unique_state_names(updates)
 
     outputs = [loss, *extra_outputs] if extra_outputs else loss

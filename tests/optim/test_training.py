@@ -273,6 +273,16 @@ def test_a_rule_keeps_only_the_gradients_it_descends():
     assert bias.get_value() < 3.0
 
 
+def test_an_updates_dict_missing_a_collected_parameter_is_refused():
+    """A dict built over a subset of the parameters would leave the rest untouched with nothing to say so."""
+    weight = trainable(np.array([2.0]), name="weight")
+    bias = trainable(np.array([3.0]), name="bias")
+    loss = 0.5 * ((weight**2).sum() + (bias**2).sum())
+
+    with pytest.raises(ValueError, match=r"No update reaches \['bias'\]"):
+        compile_train(loss, adam(learning_rate=0.1)(loss, [weight]), inputs=[])
+
+
 def test_compile_train_includes_non_trainable_updates():
     # compile_train merges batch-norm running-stat updates that a bare gradient rule would omit.
     X = pt.tensor("X", shape=(None, 4))
