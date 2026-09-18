@@ -567,9 +567,9 @@ def counter(name: str) -> Parameter:
     return step_counter(name)
 
 
-def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
+def scalar_state(name: str, fill_value: float = 0.0, dtype: str | None = None) -> Parameter:
     """
-    Allocate a floatX scalar shared variable.
+    Allocate a scalar shared variable, at ``floatX`` unless told otherwise.
 
     Parameters
     ----------
@@ -577,6 +577,8 @@ def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
         Name of the variable, used to match it at serialization boundaries.
     fill_value : float
         Value to initialize it with. Default 0.0.
+    dtype : str, optional
+        Storage dtype. Default ``floatX``. A count belongs in an integer dtype.
 
     Examples
     --------
@@ -589,7 +591,7 @@ def scalar_state(name: str, fill_value: float = 0.0) -> Parameter:
 
         scale = scalar_state("plateau/scale", fill_value=1.0)
     """
-    return pytensor.shared(np.asarray(fill_value, dtype=pytensor.config.floatX), name=name)
+    return pytensor.shared(np.asarray(fill_value, dtype=dtype or pytensor.config.floatX), name=name)
 
 
 def require_unique_state_names(updates: Updates) -> None:

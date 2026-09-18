@@ -154,9 +154,9 @@ def reduce_on_plateau(
         updates = Steps(result)
 
         best_loss = scalar_state(f"{namespace}/best_loss", fill_value=np.inf)
-        waited = scalar_state(f"{namespace}/wait")
-        cooling = scalar_state(f"{namespace}/cooldown")
-        observed = scalar_state(f"{namespace}/observed")
+        waited = scalar_state(f"{namespace}/wait", dtype="int64")
+        cooling = scalar_state(f"{namespace}/cooldown", dtype="int64")
+        observed = scalar_state(f"{namespace}/observed", dtype="int64")
         mean_loss = scalar_state(f"{namespace}/mean_loss")
 
         # Everything below is gated on `deciding`, so a window that is still filling advances nothing. At the
@@ -166,23 +166,23 @@ def reduce_on_plateau(
         deciding = seen >= accumulation_size
 
         improved = deciding & (running_mean < (1 - rtol) * best_loss - atol)
-        counted = pt.where(deciding, pt.where(improved, 0.0, waited + 1), waited)
+        counted = pt.where(deciding, pt.where(improved, 0, waited + 1), waited)
 
         # Cooling down zeroes the count rather than pausing it, so the steps immediately after a cut cannot
         # add up to the next one before the network has had a chance to respond to the rate it just got.
         in_cooldown = cooling > 0
         cutting = deciding & ~in_cooldown & (counted >= patience)
-        next_cooling = pt.where(in_cooldown, cooling - 1, pt.where(cutting, cooldown, 0.0))
+        next_cooling = pt.where(in_cooldown, cooling - 1, pt.where(cutting, cooldown, 0))
 
         updates[scale] = pt.where(cutting, pt.maximum(scale * factor, min_scale), scale).astype(
             scale.dtype
         )
         updates[best_loss] = pt.where(improved, running_mean, best_loss).astype(best_loss.dtype)
-        updates[waited] = pt.where(deciding & (in_cooldown | cutting), 0.0, counted).astype(
+        updates[waited] = pt.where(deciding & (in_cooldown | cutting), 0, counted).astype(
             waited.dtype
         )
         updates[cooling] = pt.where(deciding, next_cooling, cooling).astype(cooling.dtype)
-        updates[observed] = pt.where(deciding, 0.0, seen).astype(observed.dtype)
+        updates[observed] = pt.where(deciding, 0, seen).astype(observed.dtype)
         updates[mean_loss] = pt.where(deciding, 0.0, running_mean).astype(mean_loss.dtype)
 
         return updates

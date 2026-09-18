@@ -201,7 +201,7 @@ def large_step(max_norm: float | TensorVariable) -> SkipCondition:
 
 def _counter_or_new(given: Parameter | None, name: str) -> Parameter:
     """Return the caller's own counter, or a fresh scalar state slot under ``name``."""
-    return scalar_state(name) if given is None else given
+    return scalar_state(name, dtype="int64") if given is None else given
 
 
 def skip_if(
@@ -305,7 +305,7 @@ def skip_if(
         consecutive = _counter_or_new(consecutive_skips, f"{namespace}/consecutive_skips")
         total = _counter_or_new(total_skips, f"{namespace}/total_skips")
 
-        next_consecutive = pt.where(skipping, consecutive + 1, 0.0)
+        next_consecutive = pt.where(skipping, consecutive + 1, 0)
         if max_consecutive_skips is not None:
             next_consecutive = CheckAndRaise(
                 FloatingPointError,
