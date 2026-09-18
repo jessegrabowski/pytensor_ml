@@ -623,3 +623,19 @@ def test_get_gradients_names_a_parameter_lost_to_a_second_derivative():
 
     with pytest.raises(DisconnectedInputError, match=r"\['output_bias'\]"):
         sgd_updates(loss, [weight, scale, output_bias])
+
+
+def test_a_functional_rule_reads_a_schedule_off_its_own_clock():
+    """A schedule is a learning rate, so the functional API takes one where it takes a float. The rule
+    resolves it against the clock it already counts its own steps on, so the graph holds one clock."""
+    p = trainable(np.zeros(3), name="w")
+    loss = (p**2).sum()
+    updates = adam_updates(loss, [p], learning_rate=cosine_schedule(0.1, total_steps=10))
+    clocks = [key for key in updates if isinstance(key, params.StepCounter)]
+
+    step = function([], loss, updates=updates)
+    step()
+    step()
+
+    assert [clock.name for clock in clocks] == ["adam/step_count"]
+    assert int(clocks[0].get_value()) == 2

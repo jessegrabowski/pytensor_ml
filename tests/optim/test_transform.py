@@ -151,3 +151,18 @@ def test_add_weight_decay_skips_masked_params():
     p = trainable(np.array([4.0]), name="bias")
     out = add_weight_decay(0.1, mask=lambda param: "bias" not in param.name)({p: p}, [p])
     np.testing.assert_allclose(function([], out[p])(), [4.0])
+
+
+def test_scale_takes_a_schedule_where_it_takes_a_factor():
+    """A schedule is a learning rate, so ``scale`` takes one where it takes a float and reads it off a
+    clock of its own, which is what ``scale_by_schedule`` spells out."""
+    p = trainable(np.zeros(2), name="w")
+    updates = {p: p + pt.constant(np.array([2.0, -4.0]))}
+    out = scale(linear_schedule(1.0, total_steps=4, final_learning_rate=0.0))(updates, [p])
+
+    (clock,) = collect_step_counters(out[p])
+    step = function([], out[p], updates={clock: clock.advance()})
+    step()
+
+    assert clock.name == "scale/step_count"
+    np.testing.assert_allclose(step(), [1.5, -3.0])

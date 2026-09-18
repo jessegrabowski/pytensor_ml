@@ -4,10 +4,8 @@ from pytensor_ml.optim.base import (
     LearningRate,
     LossGradientsOrUpdates,
     Parameter,
-    Rate,
     Transform,
     Updates,
-    counter,
     reuses_state,
 )
 from pytensor_ml.optim.rules import (
@@ -23,20 +21,6 @@ from pytensor_ml.optim.rules import (
     sgd_updates,
 )
 from pytensor_ml.optim.transform import scale, trace
-
-
-def _at_learning_rate(
-    learning_rate: LearningRate,
-    name: str,
-    build_updates: Callable[[Rate], Updates],
-) -> Updates:
-    """Build updates at ``learning_rate``, reading a schedule off the clock the rule counts its own steps on.
-    Both reach that clock through :func:`counter` under ``"{name}/step_count"``, so a rule that keeps a step
-    count hands the schedule the same variable instead of a second one measuring the same time."""
-    if not callable(learning_rate):
-        return build_updates(learning_rate)
-
-    return build_updates(learning_rate(counter(f"{name}/step_count")))
 
 
 def sgd(
@@ -94,24 +78,21 @@ def sgd(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        def build_updates(rate: Rate) -> Updates:
-            if momentum_trace is None:
-                return sgd_updates(
-                    loss_gradients_or_updates,
-                    parameters,
-                    learning_rate=rate,
-                    namespace=namespace,
-                )
-            updates = sgd_updates(
+        if momentum_trace is None:
+            return sgd_updates(
                 loss_gradients_or_updates,
                 parameters,
-                learning_rate=1.0,
+                learning_rate=learning_rate,
                 namespace=namespace,
             )
-            updates = momentum_trace(updates, parameters)
-            return scale(rate)(updates, parameters)
-
-        return _at_learning_rate(learning_rate, namespace, build_updates)
+        updates = sgd_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=1.0,
+            namespace=namespace,
+        )
+        updates = momentum_trace(updates, parameters)
+        return scale(learning_rate, namespace=namespace)(updates, parameters)
 
     return rule
 
@@ -155,19 +136,15 @@ def adam(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: adam_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                beta1=beta1,
-                beta2=beta2,
-                epsilon=epsilon,
-                amsgrad=amsgrad,
-                namespace=namespace,
-            ),
+        return adam_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+            amsgrad=amsgrad,
+            namespace=namespace,
         )
 
     return rule
@@ -215,21 +192,17 @@ def adamw(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: adamw_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                weight_decay=weight_decay,
-                beta1=beta1,
-                beta2=beta2,
-                epsilon=epsilon,
-                amsgrad=amsgrad,
-                mask=mask,
-                namespace=namespace,
-            ),
+        return adamw_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+            amsgrad=amsgrad,
+            mask=mask,
+            namespace=namespace,
         )
 
     return rule
@@ -274,18 +247,14 @@ def nadam(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: nadam_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                beta1=beta1,
-                beta2=beta2,
-                epsilon=epsilon,
-                namespace=namespace,
-            ),
+        return nadam_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+            namespace=namespace,
         )
 
     return rule
@@ -330,18 +299,14 @@ def adamax(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: adamax_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                beta1=beta1,
-                beta2=beta2,
-                epsilon=epsilon,
-                namespace=namespace,
-            ),
+        return adamax_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            epsilon=epsilon,
+            namespace=namespace,
         )
 
     return rule
@@ -442,19 +407,15 @@ def rmsprop(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: rmsprop_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                rho=rho,
-                momentum=momentum,
-                epsilon=epsilon,
-                centered=centered,
-                namespace=namespace,
-            ),
+        return rmsprop_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            rho=rho,
+            momentum=momentum,
+            epsilon=epsilon,
+            centered=centered,
+            namespace=namespace,
         )
 
     return rule
@@ -496,16 +457,12 @@ def adagrad(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: adagrad_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                epsilon=epsilon,
-                namespace=namespace,
-            ),
+        return adagrad_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            epsilon=epsilon,
+            namespace=namespace,
         )
 
     return rule
@@ -548,17 +505,13 @@ def adadelta(
     def rule(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
-        return _at_learning_rate(
-            learning_rate,
-            namespace,
-            lambda rate: adadelta_updates(
-                loss_gradients_or_updates,
-                parameters,
-                learning_rate=rate,
-                rho=rho,
-                epsilon=epsilon,
-                namespace=namespace,
-            ),
+        return adadelta_updates(
+            loss_gradients_or_updates,
+            parameters,
+            learning_rate=learning_rate,
+            rho=rho,
+            epsilon=epsilon,
+            namespace=namespace,
         )
 
     return rule

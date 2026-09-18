@@ -179,12 +179,12 @@ A shared scalar is the form to reach for when the rate has to change mid-run wit
 
 type LearningRate = Rate | Schedule
 """
-What an optimizer alias accepts as its rate, adding a schedule that drives it on-graph.
+What any ``learning_rate`` accepts: a rate, or a schedule the rule reads off its own training clock.
 
 Examples
 --------
-Every alias takes either form, so a constant can be swapped for a schedule without touching anything
-else:
+Every rule and alias takes either form, so a constant can be swapped for a schedule without touching
+anything else:
 
 .. code-block:: python
 
@@ -193,6 +193,53 @@ else:
     fixed = adam(learning_rate=3e-4)
     scheduled = adam(learning_rate=cosine_schedule(3e-4, total_steps=10_000))
 """
+
+
+def rate_on(learning_rate: LearningRate, clock: Parameter) -> Rate:
+    """
+    Read a schedule off ``clock``. Any other rate passes through untouched.
+
+    Parameters
+    ----------
+    learning_rate : LearningRate
+        A rate, or a schedule of the step count.
+    clock : shared tensor variable
+        The training clock a schedule is evaluated at, ordinarily the one the rule counts its own steps on.
+
+    Returns
+    -------
+    rate : Rate
+        The rate as a number or a scalar graph.
+    """
+    return learning_rate(clock) if callable(learning_rate) else learning_rate
+
+
+def read_rate(learning_rate: LearningRate, namespace: str) -> tuple[Rate, Updates]:
+    """
+    Resolve a rate at ``floatX``, reading a schedule off a clock of the caller's own.
+
+    The clock's advance comes back as an update for the caller to write, so the updates dict carries the
+    clock and a checkpoint taken from the dict resumes the schedule where it left off. A plain rate reads
+    no clock, so none is allocated and nothing comes back to write.
+
+    Parameters
+    ----------
+    learning_rate : LearningRate
+        A rate, or a schedule of the step count.
+    namespace : str
+        Prefix of the clock a schedule reads, allocated as ``"{namespace}/step_count"``.
+
+    Returns
+    -------
+    rate : Rate
+        The rate as a number or a scalar graph.
+    clock_update : Updates
+        The clock's one-step advance when a schedule was read, empty otherwise.
+    """
+    if not callable(learning_rate):
+        return to_floatx(learning_rate), Updates()
+    clock = counter(f"{namespace}/step_count")
+    return to_floatx(learning_rate(clock)), Updates({clock: clock + 1})
 
 
 def to_floatx(value: Rate) -> Rate:
