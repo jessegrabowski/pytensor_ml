@@ -232,19 +232,6 @@ def test_compile_train_accepts_a_rule_that_advances_the_clock_the_same_way():
     assert int(clock.get_value()) == 2  # advanced once per step, not twice
 
 
-def test_compile_train_rejects_a_rule_that_advances_the_clock_differently():
-    """Two disagreeing writers would leave the clock holding one of them while both looked configured."""
-    _, loss = quadratic_problem()
-    clock = step_counter()
-
-    def rule(loss_or_gradients, parameters):
-        updates = sgd(learning_rate=cosine_schedule(0.1, 10)(clock))(loss_or_gradients, parameters)
-        return {**updates, clock: clock + 5}
-
-    with pytest.raises(ValueError, match="not the one-step advance"):
-        compile_train(loss, rule)
-
-
 def test_a_clock_read_only_by_an_extra_output_still_advances():
     """Collection covers the diagnostics too, or a reported step count would sit at zero."""
     _, loss = quadratic_problem()

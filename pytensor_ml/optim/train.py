@@ -169,21 +169,11 @@ def compile_train(
 
     # Collected from the assembled updates rather than from the loss alone: a clock is read by a schedule
     # or a policy, which live in the updates, where an RNG or a running statistic is read by the model.
+    # Assigned per key rather than merged, for the same invariance reason as the statistics above.
     for clock, next_count in collect_clock_updates(
-        [loss, *extra_outputs, *updates.values()]
+        [loss, *extra_outputs, *updates.values()], already_written=updates
     ).items():
-        written = updates.get(clock)
-        if written is None:
-            updates[clock] = next_count
-        elif equal_computations([written], [next_count]):
-            pass  # the rule advances this clock itself, identically, so its own write stands
-        else:
-            raise ValueError(
-                f"The training clock {clock.name!r} is already advanced by an expression that is not the "
-                "one-step advance. A clock advances once per step, so the two writes cannot both take "
-                "effect; drop yours, or write it as `clock + 1` if it is the same advance spelled "
-                "differently."
-            )
+        updates[clock] = next_count
 
     unwritten = [parameter.name for parameter in parameters if parameter not in updates]
     if unwritten:

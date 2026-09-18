@@ -221,16 +221,27 @@ class TestCollectClockUpdates:
 
     def test_an_already_written_clock_is_left_out_of_the_result(self):
         threaded, pinned = step_counter(name="threaded"), step_counter(name="pinned")
-        assert set(collect_clock_updates([threaded + pinned], already_written=[pinned])) == {
-            threaded
-        }
+        assert set(
+            collect_clock_updates([threaded + pinned], already_written={pinned: pinned})
+        ) == {threaded}
 
-    def test_an_already_written_clock_is_exempt_from_the_agreeing_count_check(self):
-        """A clock the caller writes is not counting this step's steps, so it has nothing to agree with."""
+    def test_a_pinned_clock_is_exempt_from_the_agreeing_count_check(self):
+        """A clock written as itself is not counting this step's steps, so it has nothing to agree with."""
         restored, fresh = step_counter(name="restored"), step_counter(name="fresh")
         restored.set_value(np.asarray(120, dtype="int64"))
 
-        assert set(collect_clock_updates([restored + fresh], already_written=[restored])) == {fresh}
+        assert set(
+            collect_clock_updates([restored + fresh], already_written={restored: restored})
+        ) == {fresh}
+
+    def test_a_clock_the_caller_advances_is_still_checked(self):
+        """A rule writes its own clock's advance. That clock is counting these steps, so a checkpoint that
+        restored it and not the others is the very thing the check exists to catch."""
+        restored, fresh = step_counter(name="restored"), step_counter(name="fresh")
+        restored.set_value(np.asarray(120, dtype="int64"))
+
+        with pytest.raises(ValueError, match="hold different step counts"):
+            collect_clock_updates([restored + fresh], already_written={restored: restored + 1})
 
     def test_pinning_one_clock_does_not_excuse_the_rest_from_agreeing(self):
         """The exemption covers only the clock the caller pinned. Two clocks the step still advances have
@@ -241,7 +252,7 @@ class TestCollectClockUpdates:
         restored.set_value(np.asarray(120, dtype="int64"))
 
         with pytest.raises(ValueError, match="hold different step counts"):
-            collect_clock_updates([pinned + restored + fresh], already_written=[pinned])
+            collect_clock_updates([pinned + restored + fresh], already_written={pinned: pinned})
 
     def test_accepts_a_single_variable_or_a_list(self):
         clock = step_counter()

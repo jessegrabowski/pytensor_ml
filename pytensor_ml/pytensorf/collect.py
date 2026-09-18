@@ -328,7 +328,7 @@ def collect_step_counters(outputs: Variable | Sequence[Variable]) -> list[StepCo
 
 def collect_clock_updates(
     outputs: Variable | Sequence[Variable],
-    already_written: Container[SharedVariable] = (),
+    already_written: Mapping[SharedVariable, Variable] | None = None,
 ) -> dict[StepCounter, TensorVariable]:
     """
     Collect the advance for every training clock the graph reads, ready to pass as a function's ``updates``.
@@ -340,11 +340,12 @@ def collect_clock_updates(
     ----------
     outputs
         One or more graph outputs to trace back from.
-    already_written : container of shared variable, optional
-        The variables the caller writes themselves, typically the ``updates`` mapping itself. Any clock
-        among them is left out of the result and exempt from the rule that every clock agrees on its step
-        count, since a clock this step does not advance is not counting its steps. Default is empty, which
-        collects and checks every clock the graph reads.
+    already_written : mapping from shared variable to its next value, optional
+        The updates the caller writes themselves, typically the ``updates`` mapping itself. Any clock among
+        them is left out of the result, so a rule's own advance stands. A clock written as itself is pinned:
+        it is not counting this step's steps, so it is also exempt from the rule that every clock agrees
+        on its step count. A clock written any other way is counting, and is checked. Default is empty,
+        which collects and checks every clock the graph reads.
 
     Returns
     -------
@@ -372,18 +373,19 @@ def collect_clock_updates(
 
         clock_updates = collect_clock_updates(list(updates.values()))
     """
-    counters = [
-        counter for counter in collect_step_counters(outputs) if counter not in already_written
-    ]
-    step_counts = {int(counter.get_value()) for counter in counters}
+    already_written = {} if already_written is None else already_written
+    clocks = collect_step_counters(outputs)
+
+    counting = [clock for clock in clocks if already_written.get(clock) is not clock]
+    step_counts = {int(clock.get_value()) for clock in counting}
     if len(step_counts) > 1:
         raise ValueError(
-            f"Training clocks {sorted(str(counter.name) for counter in counters)} hold different step "
+            f"Training clocks {sorted(str(clock.name) for clock in counting)} hold different step "
             f"counts {sorted(step_counts)}. They all count training steps, so this usually means a "
             "checkpoint restored some of them and not the others. Restore all of them, or set them to the "
             "same count before compiling."
         )
-    return {counter: counter.advance() for counter in counters}
+    return {clock: clock.advance() for clock in clocks if clock not in already_written}
 
 
 def collect_non_trainable_updates(
