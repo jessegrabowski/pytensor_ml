@@ -15,7 +15,6 @@ from pytensor_ml.optim.base import (
     scalar_state,
 )
 from pytensor_ml.optim.checks import checked_scalar
-from pytensor_ml.params import StepCounter
 
 type Decision = Callable[[Updates, Sequence[Parameter]], TensorVariable]
 """
@@ -223,8 +222,10 @@ def skip_if(
 
     The guard covers what ``rule`` writes and nothing else: a batch-norm running statistic, written by the
     model and folded in by :func:`~pytensor_ml.optim.train.compile_train` outside the rule, is not held back
-    with the step, and the step still returns the loss that produced the skip. Training clocks are exempt
-    too -- a skipped step still consumed a step, so the schedules reading them advance as usual.
+    with the step, and the step still returns the loss that produced the skip. The rule's own clock is held
+    back with the rest, since it counts the updates the rule applied and a skipped one was not: a count that
+    advanced anyway would bias-correct the next step against a moment that never saw it. A clock the caller
+    holds and passes into a schedule is not the rule's state, so it keeps counting calls, skipped or not.
 
     .. code-block:: python
 
@@ -296,14 +297,9 @@ def skip_if(
         loss_gradients_or_updates: LossGradientsOrUpdates, parameters: Sequence[Parameter]
     ) -> Updates:
         updates = rule(loss_gradients_or_updates, parameters).copy()
-        # Snapshotted before the counters are added, since those are the one thing a skipped step still has
-        # to write: freeze them along with everything else and the guard can never count its way to the
-        # error, which is a silent failure rather than a loud one.
-        held_back = {
-            variable: new_value
-            for variable, new_value in updates.items()
-            if not isinstance(variable, StepCounter)
-        }
+        # Snapshotted before the guard's own counters are added, since those record the skip and are the
+        # one thing a skipped step still writes.
+        held_back = dict(updates)
 
         skipping = condition(updates, parameters)
         consecutive = _counter_or_new(consecutive_skips, f"{namespace}/consecutive_skips")

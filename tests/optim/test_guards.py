@@ -50,16 +50,21 @@ def test_holds_back_parameters_and_state_on_a_nonfinite_step(poison):
     np.testing.assert_allclose(first_moment.get_value(), moment)
 
 
-def test_resumes_training_where_the_skipped_step_left_it():
+@pytest.mark.parametrize(
+    "make_rule", [lambda: sgd(0.1), lambda: adam(0.1)], ids=["stateless", "bias-corrected"]
+)
+def test_resumes_training_where_the_skipped_step_left_it(make_rule):
     """The skipped step must be a true no-op, not a damped or partial one: two good batches around it have
-    to land exactly where the same two would have landed on their own."""
+    to land exactly where the same two would have landed on their own. Adam is the case that can go
+    wrong quietly, since a step count that advanced through the skip would bias-correct the next step
+    against a moment that never saw it."""
     p, loss = poisonable_problem()
-    guarded = compile_train(loss, apply_if_finite(sgd(0.1)))
+    guarded = compile_train(loss, apply_if_finite(make_rule()))
     for batch in [GOOD, BAD, GOOD]:
         guarded(batch)
 
     reference_p, reference_loss = poisonable_problem()
-    unguarded = compile_train(reference_loss, sgd(0.1))
+    unguarded = compile_train(reference_loss, make_rule())
     for _ in range(2):
         unguarded(GOOD)
 
@@ -143,18 +148,6 @@ def test_skips_indefinitely_without_a_tolerance():
         step(BAD)
 
     np.testing.assert_allclose(p.get_value(), weights)
-
-
-def test_clocks_advance_through_a_skipped_step():
-    """A skipped step still consumed a step, and a frozen clock would stall every schedule reading it."""
-    p, loss = poisonable_problem()
-    step = compile_train(loss, apply_if_finite(adam(0.1)))
-    clock = state_named(step, "adam/step_count")
-
-    step(GOOD)
-    step(BAD)
-
-    assert int(clock.get_value()) == 2
 
 
 def test_large_step_holds_back_an_outsized_but_finite_step():
