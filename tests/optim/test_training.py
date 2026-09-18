@@ -269,8 +269,9 @@ def test_a_rule_keeps_only_the_gradients_it_descends():
     )
     step()
 
-    assert weight.get_value() < 2.0
-    assert bias.get_value() < 3.0
+    # The clip's bound is far above the gradient norm, so both first steps are adam's exact sign descent.
+    np.testing.assert_allclose(weight.get_value(), [2.0 - 0.1 * (1 + 0.01 * 2.0)], rtol=1e-3)
+    np.testing.assert_allclose(bias.get_value(), [3.0 - 0.1], rtol=1e-3)
 
 
 def test_an_updates_dict_missing_a_collected_parameter_is_refused():
