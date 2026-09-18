@@ -85,7 +85,7 @@ def sgd(
             learning_rate=1.0,
             namespace=namespace,
         )
-        updates = trace(momentum, nesterov)(updates, parameters)
+        updates = trace(momentum, nesterov, namespace=namespace)(updates, parameters)
         return scale(learning_rate, namespace=namespace)(updates, parameters)
 
     return rule

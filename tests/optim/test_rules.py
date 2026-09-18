@@ -638,3 +638,13 @@ def test_a_numpy_scalar_rate_does_not_widen_a_float32_graph():
         updates = sgd_updates(loss, [p], learning_rate=np.float64(0.1))
 
         assert updates[p].dtype == "float32"
+
+
+def test_sgd_momentum_keeps_its_velocity_under_its_own_namespace():
+    """The ``namespace`` the docstring offers against colliding state has to reach the velocity too, or a
+    momentum sgd next to a ``trace`` still collides and the remedy on the sgd side does nothing."""
+    p = trainable(np.zeros(3), name="w")
+    loss = (p**2).sum()
+    updates = sgd(learning_rate=0.1, momentum=0.9, namespace="slow")(loss, [p])
+
+    assert {key.name for key in updates if key is not p} == {"w/slow/velocity"}
