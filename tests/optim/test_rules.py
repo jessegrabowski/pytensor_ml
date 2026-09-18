@@ -627,3 +627,14 @@ def test_a_functional_rule_reads_a_schedule_off_its_own_clock():
 
     assert [clock.name for clock in clocks] == ["adam/step_count"]
     assert int(clocks[0].get_value()) == 2
+
+
+def test_a_numpy_scalar_rate_does_not_widen_a_float32_graph():
+    """A rate read back from a config or a checkpoint arrives as a numpy scalar, and a ``np.float64`` in a
+    float32 graph makes an update pytensor refuses with an error naming the parameter."""
+    with pytensor.config.change_flags(floatX="float32"):
+        p = params.trainable(np.zeros(3, dtype="float32"), name="w")
+        loss = (p**2).sum()
+        updates = sgd_updates(loss, [p], learning_rate=np.float64(0.1))
+
+        assert updates[p].dtype == "float32"

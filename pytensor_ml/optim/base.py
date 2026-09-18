@@ -253,8 +253,9 @@ def to_floatx(value: Rate) -> Rate:
 
     Parameters
     ----------
-    value : float or TensorVariable
-        A scalar a rule is about to build into its step.
+    value : float, numpy scalar, or TensorVariable
+        A scalar a rule is about to build into its step. A numpy scalar becomes a Python float, which
+        pytensor folds into the graph at the graph's own dtype, where a ``np.float64`` would widen it.
 
     Examples
     --------
@@ -267,7 +268,11 @@ def to_floatx(value: Rate) -> Rate:
 
         rate = to_floatx(1e-3)
     """
-    return value.astype(pytensor.config.floatX) if isinstance(value, Variable) else value
+    if isinstance(value, Variable):
+        return value.astype(pytensor.config.floatX)
+    if isinstance(value, np.generic | np.ndarray):
+        return float(value)
+    return value
 
 
 def get_gradients(
