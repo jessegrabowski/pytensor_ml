@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import numpy as np
 import pytensor.tensor as pt
 
+from pytensor.graph import graph_inputs
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import (
@@ -57,7 +58,9 @@ def reduce_on_plateau(
     rule : Transform
         The rule to wrap. Its rate must be built from ``scale`` for the cuts to reach the step.
     scale : shared tensor variable
-        The multiplier this policy owns. Nothing else may write it.
+        The multiplier this policy owns. Nothing else may write it, and the rule's step must read it, or
+        the policy raises when invoked. Two invocations of one policy each keep a fresh history but cut
+        this same variable, so two training functions built from one policy cut it twice as fast.
     factor : float
         Multiplier applied on a cut, in the open interval (0, 1). Default 0.1.
     patience : int or TensorVariable
@@ -152,6 +155,14 @@ def reduce_on_plateau(
                 "would move uphill. Put an optimizer such as `adam(rate)` inside the policy."
             )
         updates = Steps(result)
+        steps = [updates[parameter] for parameter in parameters]
+        if steps and scale not in graph_inputs(steps):
+            raise ValueError(
+                f"reduce_on_plateau would cut {scale.name!r}, but no parameter's step reads it, so the "
+                "cuts would reach nothing. Build the rule's rate from this same variable, e.g. "
+                "`adam(learning_rate=scale * 1e-3)`, and pass that one object here. Two `scalar_state` "
+                "calls with one name are two variables."
+            )
 
         best_loss = scalar_state(f"{namespace}/best_loss", fill_value=np.inf)
         waited = scalar_state(f"{namespace}/wait", dtype="int64")
