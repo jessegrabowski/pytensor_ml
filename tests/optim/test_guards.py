@@ -66,6 +66,25 @@ def test_resumes_training_where_the_skipped_step_left_it():
     np.testing.assert_allclose(p.get_value(), reference_p.get_value())
 
 
+def test_an_infinite_moment_behind_a_finite_parameter_is_skipped():
+    """An overflowed second moment divides adam's step to zero, so the parameter stays finite while the
+    rule is broken for good: every later step is ``finite / inf``. Checking the parameters alone lets that
+    through, and the parameter never moves again."""
+    with config.change_flags(floatX="float32"):
+        gradient = pt.scalar("g", dtype="float32")
+        p = trainable(np.array([2.0], dtype="float32"), name="w")
+        step = compile_train((gradient * p).sum(), apply_if_finite(adam(0.1)))
+
+        step(np.float32(1e30))
+        total_skips = state_named(step, "skip_if/total_skips")
+        second_moment = state_named(step, "w/adam/second_moment")
+
+        assert float(total_skips.get_value()) == 1
+        assert np.isfinite(second_moment.get_value()).all()
+        step(np.float32(1.0))
+        assert p.get_value() < 2.0
+
+
 def test_counts_consecutive_skips_and_resets_on_a_good_step():
     p, loss = poisonable_problem()
     consecutive = scalar_state("skip_if/consecutive_skips")

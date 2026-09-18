@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import pytensor.tensor as pt
 
 from pytensor.raise_op import CheckAndRaise
@@ -94,16 +95,18 @@ class SkipCondition:
 
 def nonfinite() -> SkipCondition:
     """
-    Throw the step away when any parameter the rule would write is inf or NaN.
+    Throw the step away when any value the rule would write is inf or NaN.
 
     The condition behind :func:`apply_if_finite`, and the one to reach for when there is no scale to
     threshold on. It fires only once a value has already gone non-finite, which on a diverging run is a
     lagging alarm: the step before is typically finite and enormous. :func:`large_step` catches that one.
 
-    Only the parameters are checked. A policy is free to keep a sentinel among its own state --
+    Optimizer state is checked along with the parameters, because a poisoned moment need not reach its
+    parameter: an infinite second moment divides the step to zero, which is finite, and the parameter then
+    never moves again. Training clocks are integers and are never checked. A variable that is already
+    non-finite when the guard is built is a sentinel rather than a failure --
     :func:`~pytensor_ml.optim.policy.reduce_on_plateau` holds an infinite best-loss until it has seen a full
-    window -- and that is not a step to throw away. Optimizer state cannot hide a NaN for long in any case,
-    since a poisoned moment reaches its parameter on the very next step.
+    window -- and is left alone.
 
     Examples
     --------
@@ -128,8 +131,9 @@ def nonfinite() -> SkipCondition:
     def decide(updates: Updates, parameters: Sequence[Parameter]) -> TensorVariable:
         checked_values = [
             new_value
-            for new_value in (updates[parameter] for parameter in parameters)
+            for variable, new_value in updates.items()
             if new_value.dtype.startswith("float")
+            and bool(np.all(np.isfinite(variable.get_value(borrow=True))))
         ]
         if not checked_values:
             raise ValueError(
