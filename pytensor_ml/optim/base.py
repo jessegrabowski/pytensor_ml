@@ -10,7 +10,7 @@ from pytensor.graph.op import io_connection_pattern
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
-from pytensor_ml.params import TrainableParameter, step_counter
+from pytensor_ml.params import StepCounter, TrainableParameter, step_counter
 from pytensor_ml.pytensorf import rewrite_pregrad
 
 type Parameter = TensorSharedVariable
@@ -191,7 +191,7 @@ anything else:
 """
 
 
-def rate_on(learning_rate: LearningRate, clock: Parameter) -> Rate:
+def rate_on(learning_rate: LearningRate, clock: StepCounter) -> Rate:
     """
     Read a schedule off ``clock``. Any other rate passes through untouched.
 
@@ -199,7 +199,7 @@ def rate_on(learning_rate: LearningRate, clock: Parameter) -> Rate:
     ----------
     learning_rate : LearningRate
         A rate, or a schedule of the step count.
-    clock : shared tensor variable
+    clock : StepCounter
         The training clock a schedule is evaluated at, ordinarily the one the rule counts its own steps on.
 
     Returns
@@ -234,8 +234,8 @@ def read_rate(learning_rate: LearningRate, namespace: str) -> tuple[Rate, Update
     """
     if not callable(learning_rate):
         return to_floatx(learning_rate), Updates()
-    clock = counter(f"{namespace}/step_count")
-    return to_floatx(learning_rate(clock)), Updates({clock: clock + 1})
+    clock = step_counter(f"{namespace}/step_count")
+    return to_floatx(learning_rate(clock)), Updates({clock: clock.advance()})
 
 
 def to_floatx(value: Rate) -> Rate:
@@ -533,38 +533,6 @@ def state_for(parameter: Parameter, slot: str, fill_value: float = 0.0) -> Param
     # Keeps `Linear_1_W` and `Linear_1_W/adam/first_moment` numbered onto the same layer.
     state.layer_name = getattr(parameter, "layer_name", None)
     return state
-
-
-def counter(name: str) -> Parameter:
-    """
-    Allocate the training clock a component counts its own steps on.
-
-    A :class:`~pytensor_ml.params.StepCounter` rather than a plain shared variable, so a schedule can read
-    the same notion of time the rule uses, and :func:`~pytensor_ml.pytensorf.collect_clock_updates` advances
-    it for a caller who does not write the advance themselves.
-
-    Parameters
-    ----------
-    name : str
-        Name of the clock, used to match it at serialization boundaries.
-
-    Returns
-    -------
-    clock : StepCounter
-        A new step counter under ``name``.
-
-    Examples
-    --------
-    Read a schedule off a clock of your own, which is what a transform does when it applies a rate after
-    the rule rather than inside it:
-
-    .. code-block:: python
-
-        from pytensor_ml.optim import cosine_schedule, counter
-
-        rate = cosine_schedule(3e-4, total_steps=10_000)(counter("my_transform/step_count"))
-    """
-    return step_counter(name)
 
 
 def scalar_state(name: str, fill_value: float = 0.0, dtype: str | None = None) -> Parameter:

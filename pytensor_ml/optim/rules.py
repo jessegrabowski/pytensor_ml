@@ -13,13 +13,13 @@ from pytensor_ml.optim.base import (
     Parameter,
     Steps,
     Updates,
-    counter,
     gradients_to_descend,
     rate_on,
     read_rate,
     state_for,
     to_floatx,
 )
+from pytensor_ml.params import step_counter
 
 
 def sgd_updates(
@@ -190,7 +190,7 @@ def _adam_family_updates(
         Predicate selecting which parameters the decay reaches. Every parameter when omitted.
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    step_count = counter(f"{namespace}/step_count")
+    step_count = step_counter(f"{namespace}/step_count")
     learning_rate = to_floatx(rate_on(learning_rate, step_count))
     new_step_count = step_count + 1
     new_step_count_float = new_step_count.astype(config.floatX)
@@ -408,7 +408,7 @@ def nadam_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    step_count = counter(f"{namespace}/step_count")
+    step_count = step_counter(f"{namespace}/step_count")
     learning_rate = to_floatx(rate_on(learning_rate, step_count))
     new_step_count = step_count + 1
     new_step_count_float = new_step_count.astype(config.floatX)
@@ -504,7 +504,7 @@ def adamax_updates(
         loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
     """
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
-    step_count = counter(f"{namespace}/step_count")
+    step_count = step_counter(f"{namespace}/step_count")
     learning_rate = to_floatx(rate_on(learning_rate, step_count))
     new_step_count = step_count + 1
     new_step_count_float = new_step_count.astype(config.floatX)
