@@ -10,7 +10,15 @@ from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, StandardScaler
 from pytensor_ml.activations import LeakyReLU, Tanh
 from pytensor_ml.layers import BatchNorm, Linear, Sequential
 from pytensor_ml.loss import CrossEntropy, SquaredError, supervised_loss
-from pytensor_ml.optim import adam, adamw, compile_train, cosine_schedule, sgd
+from pytensor_ml.optim import (
+    adam,
+    adamw,
+    chain,
+    clip_by_global_norm,
+    compile_train,
+    cosine_schedule,
+    sgd,
+)
 from pytensor_ml.optim.base import state_for
 from pytensor_ml.params import step_counter, trainable
 from pytensor_ml.pytensorf import collect_non_trainable_params, collect_trainable_params
@@ -240,6 +248,29 @@ def test_two_rules_over_different_parameter_groups_train_both():
     # its decoupled decay of weight_decay * parameter on top.
     np.testing.assert_allclose(weight.get_value(), [2.0 - 0.1 * (1 + 0.01 * 2.0)], rtol=1e-3)
     np.testing.assert_allclose(bias.get_value(), [3.0 - 0.1], rtol=1e-3)
+
+
+def test_a_rule_keeps_only_the_gradients_it_descends():
+    """Behind a gradient-space transform, each per-group rule is handed every parameter's gradient. A rule
+    that passed the others on inside its Steps dict would have them compile as ``p + g``, an ascent, and
+    the merge below would keep whichever copy came last."""
+    weight = trainable(np.array([2.0]), name="weight")
+    bias = trainable(np.array([3.0]), name="bias")
+    loss = 0.5 * ((weight**2).sum() + (bias**2).sum())
+
+    def per_group(loss_or_gradients, parameters):
+        return {
+            **adam(learning_rate=0.1)(loss_or_gradients, [bias]),
+            **adamw(learning_rate=0.1)(loss_or_gradients, [weight]),
+        }
+
+    step = compile_train(
+        loss, chain(clip_by_global_norm(100.0), per_group), parameters=[weight, bias], inputs=[]
+    )
+    step()
+
+    assert weight.get_value() < 2.0
+    assert bias.get_value() < 3.0
 
 
 def test_compile_train_includes_non_trainable_updates():

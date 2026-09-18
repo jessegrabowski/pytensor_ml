@@ -10,7 +10,7 @@ from pytensor.graph.op import io_connection_pattern
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
-from pytensor_ml.params import step_counter
+from pytensor_ml.params import TrainableParameter, step_counter
 from pytensor_ml.pytensorf import rewrite_pregrad
 
 type Parameter = TensorSharedVariable
@@ -426,7 +426,20 @@ def gradients_to_descend(
             "descends along what it reads, so it would negate that step and move the parameters uphill. "
             "Keep one rule in a chain and shape its step with `scale`, `trace`, or a clip after it."
         )
-    return incoming, steps_of(incoming, parameters)
+    gradients = steps_of(incoming, parameters)
+    if isinstance(incoming, Gradients):
+        # A gradient for a parameter this rule does not descend cannot travel on inside a Steps dict: it
+        # would compile as `p + g`, an ascent. Another rule over that parameter reads it from the same
+        # Gradients dict this one did, so dropping it here loses nothing.
+        own_parameters = set(parameters)
+        incoming = Gradients(
+            {
+                key: value
+                for key, value in incoming.items()
+                if key in own_parameters or not isinstance(key, TrainableParameter)
+            }
+        )
+    return incoming, gradients
 
 
 def steps_of(updates: Updates, parameters: Sequence[Parameter]) -> list[TensorVariable]:
