@@ -8,6 +8,7 @@ import pytest
 from pytensor.gradient import DisconnectedInputError, grad
 
 from pytensor_ml import params
+from pytensor_ml.checkpoint import load_state, save_state
 from pytensor_ml.optim import (
     adadelta,
     adadelta_updates,
@@ -755,6 +756,28 @@ def test_lbfgs_parameters_of_different_dtypes_reach_the_minimum():
         "float64",
     )
     np.testing.assert_allclose([u.get_value()[0], v.get_value()[0]], [1.0, -2.0], rtol=1e-5)
+
+
+def test_lbfgs_resumes_its_trajectory_from_a_checkpoint(tmp_path):
+    """Every piece of the rule's state is named and saved, so a run restored mid-way retraces the
+    steps it took the first time; a ring index or curvature left behind would desynchronize the memory
+    from its order."""
+    A = np.array([[3.0, 0.5], [0.5, 1.0]])
+    p = trainable(np.array([5.0, -3.0]), name="w")
+    loss = 0.5 * p @ pt.constant(A, dtype=floatX) @ p
+    updates = lbfgs_updates(loss, [p], learning_rate=0.5, memory_size=2)
+    state = list(updates)
+    step = function([], loss, updates=updates)
+    for _ in range(3):
+        step()
+    path = tmp_path / "lbfgs.safetensors"
+    save_state(state, path)
+
+    first = [float(step()) for _ in range(4)]
+    load_state(state, path)
+    second = [float(step()) for _ in range(4)]
+
+    np.testing.assert_array_equal(second, first)
 
 
 def test_lbfgs_rejects_a_zero_memory_size():
