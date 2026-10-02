@@ -1,10 +1,13 @@
 from collections.abc import Callable, Sequence
 
+import numpy as np
+import pytensor
 import pytensor.tensor as pt
 
 from pytensor import config
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.basic import Variable
+from pytensor.scalar import upcast
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import (
@@ -16,9 +19,11 @@ from pytensor_ml.optim.base import (
     gradients_to_descend,
     rate_on,
     read_rate,
+    scalar_state,
     state_for,
     to_floatx,
 )
+from pytensor_ml.optim.lbfgs import LBFGSDirection, flat_dot
 from pytensor_ml.params import step_counter
 
 
@@ -898,5 +903,189 @@ def rprop_updates(
         updates[step_size] = new_step_size
         updates[previous_gradient] = effective_gradient
         updates[parameter] = parameter - pt.sign(effective_gradient) * new_step_size
+
+    return updates
+
+
+def lbfgs_updates(
+    loss_gradients_or_updates: LossGradientsOrUpdates,
+    parameters: Sequence[Parameter],
+    learning_rate: LearningRate = 1.0,
+    memory_size: int = 10,
+    scale_init_precond: bool = True,
+    namespace: str = "lbfgs",
+) -> Updates:
+    r"""
+    L-BFGS: descend along the gradient multiplied by a limited-memory inverse-Hessian approximation.
+
+    The approximation is built from the last ``memory_size`` accepted pairs of parameter differences
+    :math:`s = p_{k+1} - p_k` and gradient differences :math:`y = g_{k+1} - g_k`, applied to the gradient
+    by the two-loop recursion of :class:`~pytensor_ml.optim.lbfgs.LBFGSDirection` starting from
+    :math:`\gamma I`, with :math:`\gamma = s^\top y / y^\top y` for the newest pair. A pair enters the
+    memory only when :math:`y^\top s > \epsilon\, y^\top y`, which keeps the approximation positive
+    definite, so a step through a non-convex region leaves the memory as it was. Before any pair is
+    accepted :math:`\gamma = \min(1, 1 / \|g\|)`, which keeps the first step inside the unit ball. The
+    step is :math:`p \leftarrow p - \eta H g`.
+
+    The direction is well scaled once the memory holds a pair, so :math:`\eta = 1` is the natural rate.
+    The rule takes every step at that rate: there is no line search yet (pymc-devs/pytensor-ml#58), so
+    the rate is the only safeguard against a bad direction. Consecutive gradients have to be measured on
+    the same objective for their difference to be curvature, so the rule assumes a deterministic,
+    full-batch loss.
+
+    Three uses break that assumption. A gradient transform ahead of the rule in a chain, such as
+    :func:`~pytensor_ml.optim.clipping.clip_by_global_norm`, hands it gradients whose differences are not
+    curvature, and the rule can diverge. Clip after the rule instead: the parameter differences are read
+    off the parameters, so a clipped step still forms a valid pair. Wrapping the rule in
+    :func:`~pytensor_ml.optim.guards.skip_if` does not rescue a bad step either, because the loss is
+    deterministic and a skipped step is recomputed unchanged on the next call until the guard raises. A
+    step that a guard would skip calls for a smaller rate. Finally, a parameter written between steps,
+    with ``set_value`` for instance, forms a pair from a move the rule did not make, and that pair stays
+    in the memory for up to ``memory_size`` steps.
+
+    Parameters
+    ----------
+    loss_gradients_or_updates : TensorVariable, sequence of TensorVariable, or Updates
+        Scalar loss to differentiate, precomputed gradients, or the updates dict an earlier transform in
+        a chain produced.
+    parameters : sequence of shared tensor variable
+        Parameters to update.
+    learning_rate : float or shared tensor variable
+        Step size :math:`\eta`. Default 1.0.
+    memory_size : int
+        Number of pairs the memory holds. Default 10.
+    scale_init_precond : bool
+        Start the recursion from :math:`\gamma I` as above. When False it starts from the identity, and
+        the first step is the raw gradient. Default True.
+    namespace : str
+        Prefix for every state slot this rule allocates, so two rules in one graph keep separate state
+        rather than reusing each other's. Default is the rule's own name.
+
+    Returns
+    -------
+    updates : Updates
+        Mapping from each parameter and its memory buffers to their next values.
+
+    Examples
+    --------
+    Compile the step yourself rather than going through :func:`~pytensor_ml.optim.train.compile_train`.
+    The rule returns the updates dict directly, with no line search:
+
+    .. code-block:: python
+
+        import numpy as np
+
+        from pytensor_ml.layers import Input, Linear
+        from pytensor_ml.loss import SquaredError, supervised_loss
+        from pytensor_ml.optim import lbfgs_updates
+        from pytensor_ml.pytensorf import collect_trainable_params, function
+
+        X = Input("X", shape=(None, 4))
+        loss, target = supervised_loss(Linear("fc", n_in=4, n_out=1)(X), SquaredError())
+
+        updates = lbfgs_updates(loss, collect_trainable_params(loss), learning_rate=0.5)
+        step = function([X, target], loss, updates=updates)
+        loss_value = step(np.zeros((8, 4)), np.zeros((8, 1)))
+    """
+    if memory_size < 1:
+        raise ValueError(f"memory_size must be at least 1, got {memory_size}.")
+
+    incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
+    step_count = step_counter(f"{namespace}/step_count")
+    learning_rate = to_floatx(rate_on(learning_rate, step_count))
+
+    pairs_written = scalar_state(f"{namespace}/pairs_written", dtype="int64")
+    previous_values = [state_for(p, f"{namespace}/previous_value") for p in parameters]
+    previous_gradients = [state_for(p, f"{namespace}/previous_gradient") for p in parameters]
+    value_memory = [
+        state_for(p, f"{namespace}/value_differences", history_size=memory_size) for p in parameters
+    ]
+    gradient_memory = [
+        state_for(p, f"{namespace}/gradient_differences", history_size=memory_size)
+        for p in parameters
+    ]
+    # One curvature per slot, at the dtype of the cross-parameter dot that measures it. A slot that holds
+    # no pair keeps a zero, which the recursion reads as a pair that contributes nothing.
+    curvatures = pytensor.shared(
+        np.zeros(memory_size, dtype=upcast(*(gradient.dtype for gradient in gradients))),
+        name=f"{namespace}/curvatures",
+        shape=(memory_size,),
+    )
+
+    # The buffers hold zeros before the first step, so the differences read off them are meaningless
+    # until a previous point exists; the guard below never lets those into the memory.
+    value_differences = [p - previous for p, previous in zip(parameters, previous_values)]
+    gradient_differences = [g - previous for g, previous in zip(gradients, previous_gradients)]
+    curvature = flat_dot(gradient_differences, value_differences)
+    gradient_change = flat_dot(gradient_differences, gradient_differences)
+    epsilon = max(np.finfo(gradient.dtype).eps for gradient in gradients)
+    # Near a minimum y . y underflows to zero, so the relative test alone admits a pair whose inverse
+    # curvature or identity scale overflows; both have to be representable to enter the memory.
+    accept = (
+        (step_count > 0)
+        & (curvature > epsilon * gradient_change)
+        & pt.isfinite(pt.reciprocal(curvature))
+        & pt.isfinite(curvature / gradient_change)
+    )
+
+    # Rejection rewrites the slot with itself, so the write stays in place and unconditional; only the
+    # count decides whether the slot is now part of the memory. The slot is a one-element index vector
+    # rather than a scalar because mlx cannot trace a scalar index (pymc-devs/pytensor#2422).
+    slot = (pairs_written % memory_size)[None]
+    new_value_memory = [
+        pt.set_subtensor(memory[slot], pt.switch(accept, s[None], memory[slot]))
+        for memory, s in zip(value_memory, value_differences)
+    ]
+    new_gradient_memory = [
+        pt.set_subtensor(memory[slot], pt.switch(accept, y[None], memory[slot]))
+        for memory, y in zip(gradient_memory, gradient_differences)
+    ]
+    # Stored inverted, from the very dot the guard tested, so an admitted pair's curvature is positive by
+    # construction. The divisor is swapped out on rejection so a zero curvature never reaches it.
+    rho = pt.reciprocal(pt.switch(accept, curvature, 1.0)).astype(curvatures.dtype)
+    new_curvatures = pt.set_subtensor(
+        curvatures[slot], pt.switch(accept, rho[None], curvatures[slot])
+    )
+    new_pairs_written = pairs_written + accept.astype(pairs_written.dtype)
+
+    updates: Updates = Steps(incoming)
+    if scale_init_precond:
+        # The newest admitted pair's s . y / y . y, carried from the step that admitted it, since a
+        # rejected step leaves the newest pair in memory unchanged.
+        newest_pair_scale = scalar_state(f"{namespace}/identity_scale", dtype=curvatures.dtype)
+        new_newest_pair_scale = pt.switch(
+            accept,
+            curvature / pt.switch(accept, gradient_change, 1.0),
+            newest_pair_scale,
+        ).astype(newest_pair_scale.dtype)
+        gradient_norm = pt.sqrt(flat_dot(gradients, gradients))
+        identity_scale = pt.switch(
+            new_pairs_written > 0,
+            new_newest_pair_scale,
+            pt.minimum(1.0, 1.0 / pt.switch(gradient_norm > 0, gradient_norm, 1.0)),
+        )
+        updates[newest_pair_scale] = new_newest_pair_scale
+    else:
+        identity_scale = 1.0
+
+    directions = LBFGSDirection(n_parameters=len(parameters), memory_size=memory_size)(
+        new_pairs_written,
+        identity_scale,
+        new_curvatures,
+        *gradients,
+        *new_value_memory,
+        *new_gradient_memory,
+        return_list=True,
+    )
+
+    updates[step_count] = step_count + 1
+    updates[pairs_written] = new_pairs_written
+    updates[curvatures] = new_curvatures
+    for index, parameter in enumerate(parameters):
+        updates[previous_values[index]] = parameter
+        updates[previous_gradients[index]] = gradients[index]
+        updates[value_memory[index]] = new_value_memory[index]
+        updates[gradient_memory[index]] = new_gradient_memory[index]
+        updates[parameter] = parameter - learning_rate * directions[index]
 
     return updates

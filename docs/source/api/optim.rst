@@ -26,6 +26,7 @@ Update rules
     rprop
     adagrad
     adadelta
+    lbfgs
 
 Transforms
 ----------
@@ -130,3 +131,11 @@ Low-level update functions
     rprop_updates
     adagrad_updates
     adadelta_updates
+    lbfgs_updates
+
+.. currentmodule:: pytensor_ml.optim.lbfgs
+
+.. autosummary::
+    :toctree: generated/
+
+    LBFGSDirection

@@ -8,6 +8,7 @@ import pytest
 from pytensor.gradient import DisconnectedInputError, grad
 
 from pytensor_ml import params
+from pytensor_ml.checkpoint import load_state, save_state
 from pytensor_ml.optim import (
     adadelta,
     adadelta_updates,
@@ -21,6 +22,8 @@ from pytensor_ml.optim import (
     adamw_updates,
     compile_train,
     cosine_schedule,
+    lbfgs,
+    lbfgs_updates,
     nadam,
     nadam_updates,
     rmsprop,
@@ -32,6 +35,7 @@ from pytensor_ml.optim import (
 )
 from pytensor_ml.optim import alias as alias_module
 from pytensor_ml.pytensorf import function
+from tests.optim.lbfgs_reference import dense_inverse_hessian
 
 floatX = pytensor.config.floatX
 
@@ -62,6 +66,7 @@ def trainable(value, name=None, **kwargs):
         nadam(learning_rate=1e-2),
         adamax(learning_rate=1e-2),
         rprop(learning_rate=1e-2),
+        lbfgs(),
     ],
     ids=[
         "sgd",
@@ -79,6 +84,7 @@ def trainable(value, name=None, **kwargs):
         "nadam",
         "adamax",
         "rprop",
+        "lbfgs",
     ],
 )
 def test_rule_reduces_loss(run_training, rule):
@@ -97,8 +103,9 @@ def test_rule_reduces_loss(run_training, rule):
         (rmsprop, "rmsprop_updates"),
         (adagrad, "adagrad_updates"),
         (adadelta, "adadelta_updates"),
+        (lbfgs, "lbfgs_updates"),
     ],
-    ids=["adam", "adamw", "nadam", "adamax", "rprop", "rmsprop", "adagrad", "adadelta"],
+    ids=["adam", "adamw", "nadam", "adamax", "rprop", "rmsprop", "adagrad", "adadelta", "lbfgs"],
 )
 def test_alias_forwards_every_argument_to_the_matching_parameter(alias, updates_name, monkeypatch):
     # test_rule_reduces_loss cannot see a mis-forward: the loss still falls if beta1 and beta2 are
@@ -260,6 +267,7 @@ def test_two_rules_of_one_kind_keep_separate_state_when_named():
         (rmsprop_updates, "rmsprop"),
         (adadelta_updates, "adadelta"),
         (rprop_updates, "rprop"),
+        (lbfgs_updates, "lbfgs"),
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )
@@ -548,6 +556,234 @@ def test_rprop_shrinks_and_skips_on_sign_flip():
     np.testing.assert_allclose(p.get_value(), [-lr])
     fn([-1.0])  # remembered gradient was zeroed, so this step is neutral at the shrunk size
     np.testing.assert_allclose(p.get_value(), [-lr + lr * eta_minus])
+
+
+def test_lbfgs_satisfies_the_secant_condition_on_the_newest_pair():
+    """The inverse-Hessian estimate maps the newest gradient difference onto the parameter difference
+    that produced it, ``H y = s``, whatever the initial scaling. A zero gradient holds the parameters
+    still while the move before it becomes the newest pair with ``y = -g``, so feeding ``-g`` next has
+    to move them by ``-lr * s``. Two parameters, so the memory is split across tensors."""
+    g_u, g_v = pt.vector("g_u"), pt.vector("g_v")
+    u = trainable(np.zeros(2), name="u")
+    v = trainable(np.zeros(1), name="v")
+    lr = 0.3
+    fn = function([g_u, g_v], [u, v], updates=lbfgs_updates([g_u, g_v], [u, v], learning_rate=lr))
+    g = [np.array([1.0, -2.0], dtype=floatX), np.array([0.5], dtype=floatX)]
+
+    fn(*g)
+    fn(*[0.5 * gp for gp in g])
+    before_move = [x.get_value().copy() for x in (u, v)]
+    fn(*[0.5 * gp for gp in g])
+    after_move = [x.get_value().copy() for x in (u, v)]
+    fn(*[np.zeros_like(gp) for gp in g])  # no move; (after - before, -0.5 g) is now the newest pair
+    fn(*[-0.5 * gp for gp in g])
+
+    for x, x_after_move, x_before_move in zip((u, v), after_move, before_move):
+        np.testing.assert_allclose(
+            x.get_value(), x_after_move - lr * (x_after_move - x_before_move), rtol=RTOL
+        )
+
+
+def test_lbfgs_reaches_the_minimum_of_a_quadratic():
+    # Two slots for two dimensions: once both hold pairs the estimate is close to the true inverse
+    # Hessian and unit steps close in on the minimizer, which is known in closed form.
+    A = np.array([[3.0, 0.5], [0.5, 1.0]])
+    b = np.array([1.0, -2.0])
+    u = trainable(np.array([5.0]), name="u")
+    v = trainable(np.array([-3.0]), name="v")
+    x = pt.concatenate([u, v])
+    loss = 0.5 * x @ pt.constant(A, dtype=floatX) @ x - pt.constant(b, dtype=floatX) @ x
+    step = function([], loss, updates=lbfgs_updates(loss, [u, v], learning_rate=1.0, memory_size=2))
+
+    for _ in range(12):
+        step()
+
+    np.testing.assert_allclose(
+        np.concatenate([u.get_value(), v.get_value()]), np.linalg.solve(A, b), rtol=1e-4
+    )
+
+
+@pytest.mark.parametrize("gradient", [[3.0, -4.0], [0.3, -0.4]], ids=["long", "short"])
+def test_lbfgs_first_step_is_the_gradient_capped_to_the_unit_ball(gradient):
+    # A gradient of norm 5 is cut to unit length, one of norm 0.5 is left as it is.
+    p = trainable(np.zeros(2), name="w")
+    loss = (pt.constant(np.array(gradient), dtype=floatX) * p).sum()
+    step = function([], loss, updates=lbfgs_updates(loss, [p], learning_rate=1.0))
+
+    step()
+
+    g = np.array(gradient)
+    np.testing.assert_allclose(p.get_value(), -min(1.0, 1.0 / np.linalg.norm(g)) * g, rtol=RTOL)
+
+
+@pytest.mark.parametrize("memory_size", [1, 2], ids=["one_slot", "two_slots"])
+def test_lbfgs_step_matches_the_dense_update_through_a_ring_wrap(memory_size):
+    """On a strictly convex quadratic every pair is accepted, so the memory is the last ``memory_size``
+    chronological pairs and each step is ``-lr * H g`` for the dense BFGS matrix built from them. Over
+    six steps one slot is overwritten every step, where the newest pair is also the oldest, and two slots
+    wrap the ring twice; a rule that overwrote the wrong slot or read the newest pair off by one would
+    drift from the dense reference from the third step on."""
+    A = np.diag([1.0, 2.0, 3.0, 4.0, 5.0]) + 0.1
+    A = A @ A.T
+    b = np.array([0.3, -1.0, 2.0, 0.5, -0.7])
+    u = trainable(np.array([1.0, -2.0, 0.5]), name="u")
+    v = trainable(np.array([3.0, 1.0]), name="v")
+    x = pt.concatenate([u, v])
+    loss = 0.5 * x @ pt.constant(A, dtype=floatX) @ x - pt.constant(b, dtype=floatX) @ x
+    lr = 0.5
+    updates = lbfgs_updates(loss, [u, v], learning_rate=lr, memory_size=memory_size)
+    step = function([], pt.grad(loss, [u, v]), updates=updates)  # gradient before the update
+
+    pairs = []
+    previous = None
+    for _ in range(6):
+        x_before = np.concatenate([u.get_value(), v.get_value()])
+        g_before = np.concatenate([g.ravel() for g in step()])
+        if previous is not None:
+            pairs.append((x_before - previous[0], g_before - previous[1]))
+        if pairs:
+            s, y = pairs[-1]
+            gamma = (s @ y) / (y @ y)
+        else:
+            gamma = min(1.0, 1.0 / np.linalg.norm(g_before))
+        H = dense_inverse_hessian(gamma, pairs[-memory_size:], x_before.size)
+        np.testing.assert_allclose(
+            np.concatenate([u.get_value(), v.get_value()]), x_before - lr * H @ g_before, rtol=RTOL
+        )
+        previous = (x_before, g_before)
+
+
+def test_lbfgs_schedule_reads_the_rules_own_clock():
+    # The rule keeps a step counter to tell the first step apart; a scheduled rate must read that same
+    # clock rather than allocate a second one measuring the same time.
+    parameter = trainable(np.array([1.0, -2.0]), name="w")
+    loss = (parameter**2).sum()
+
+    step = compile_train(loss, lbfgs(cosine_schedule(0.1, 10), memory_size=2), inputs=[])
+
+    counters = [
+        str(shared.name) for shared in step.get_shared() if str(shared.name).endswith("step_count")
+    ]
+    assert counters == ["lbfgs/step_count"]
+
+
+def test_lbfgs_without_initial_scaling_starts_along_the_raw_gradient():
+    p = trainable(np.array([3.0, -4.0]), name="w")
+    loss = (pt.constant(np.array([3.0, -4.0]), dtype=floatX) * p).sum()
+    step = function(
+        [], loss, updates=lbfgs_updates(loss, [p], learning_rate=0.1, scale_init_precond=False)
+    )
+
+    step()
+
+    np.testing.assert_allclose(p.get_value(), [3.0, -4.0] - 0.1 * np.array([3.0, -4.0]), rtol=RTOL)
+
+
+def test_lbfgs_rejects_a_pair_with_negative_curvature():
+    """A step whose gradient change opposes the parameter change would make the inverse-Hessian estimate
+    indefinite, so the pair is left out of the memory, the ring index does not advance, and the next step
+    is the one an empty memory gives. An accepted pair's curvature is stored beside it as ``1 / (y . s)``."""
+    g = pt.vector("g")
+    p = trainable(np.zeros(2), name="w")
+    lr = 0.1
+    updates = lbfgs_updates([g], [p], learning_rate=lr, memory_size=2)
+    memory = next(key for key in updates if key.name == "w/lbfgs/value_differences")
+    gradient_memory = next(key for key in updates if key.name == "w/lbfgs/gradient_differences")
+    curvatures = next(key for key in updates if key.name == "lbfgs/curvatures")
+    pairs_written = next(key for key in updates if key.name == "lbfgs/pairs_written")
+    fn = function([g], p, updates=updates)
+
+    fn(np.array([1.0, 0.0], dtype=floatX))  # first step: no previous point, nothing to write
+    before = p.get_value().copy()
+    fn(np.array([2.0, 0.0], dtype=floatX))  # p moved along -g and g grew: y . s < 0, rejected
+    assert int(pairs_written.get_value()) == 0
+    np.testing.assert_array_equal(memory.get_value(), 0.0)
+    np.testing.assert_array_equal(curvatures.get_value(), 0.0)
+    np.testing.assert_allclose(p.get_value(), before - lr * 0.5 * np.array([2.0, 0.0]), rtol=RTOL)
+    fn(np.array([0.5, 0.0], dtype=floatX))  # g shrank along the move: y . s > 0, accepted
+    assert int(pairs_written.get_value()) == 1
+    assert np.any(memory.get_value()[0] != 0.0)
+    s, y = memory.get_value()[0], gradient_memory.get_value()[0]
+    np.testing.assert_allclose(curvatures.get_value(), [1.0 / (y @ s), 0.0], rtol=RTOL)
+
+
+def test_lbfgs_rejects_a_pair_whose_curvature_is_positive_but_negligible():
+    """The guard asks for ``y . s > eps * y . y``, not only a positive sign: a pair whose curvature is
+    tiny next to its gradient change would put a near-singular ``1 / (y . s)`` into the memory."""
+    g = pt.vector("g")
+    p = trainable(np.zeros(2), name="w")
+    updates = lbfgs_updates([g], [p], learning_rate=0.1, memory_size=2)
+    pairs_written = next(key for key in updates if key.name == "lbfgs/pairs_written")
+    fn = function([g], p, updates=updates)
+
+    fn(np.array([1.0, 0.0], dtype=floatX))  # s = [-0.1, 0] on the next step
+    # y = [-0.5, 1e9]: y . s = 0.05 > 0, but eps * y . y is about 1e18 * eps, far above it
+    fn(np.array([0.5, 1e9], dtype=floatX))
+
+    assert int(pairs_written.get_value()) == 0
+
+
+def test_lbfgs_stays_finite_after_it_converges():
+    """Past the minimum the gradient changes underflow, so ``y . y`` reaches zero while ``y . s`` is
+    still a positive subnormal; a pair admitted then stores an infinite ``1 / (y . s)`` and the next
+    step is NaN. float32 at any floatX, where the underflow arrives within a few steps."""
+    p = params.trainable(np.ones(2, dtype="float32"), name="w")
+    loss = (p**2).sum()
+    step = function([], loss, updates=lbfgs_updates(loss, [p]))
+
+    for _ in range(10):
+        step()
+
+    np.testing.assert_array_equal(p.get_value(), 0.0)
+
+
+def test_lbfgs_parameters_of_different_dtypes_reach_the_minimum():
+    # The curvatures and the identity scale are cross-parameter dots, so they are kept at the widest
+    # parameter dtype while each parameter keeps its own.
+    u = params.trainable(np.array([5.0], dtype="float64"), name="u")
+    v = params.trainable(np.array([-3.0], dtype="float32"), name="v")
+    loss = 0.5 * ((u - 1.0) ** 2).sum() + 2.0 * ((v + 2.0) ** 2).sum()
+    updates = lbfgs_updates(loss, [u, v], memory_size=2)
+    curvatures = next(key for key in updates if key.name == "lbfgs/curvatures")
+    step = function([], loss, updates=updates)
+
+    for _ in range(12):
+        step()
+
+    assert (u.get_value().dtype, v.get_value().dtype, curvatures.dtype) == (
+        "float64",
+        "float32",
+        "float64",
+    )
+    np.testing.assert_allclose([u.get_value()[0], v.get_value()[0]], [1.0, -2.0], rtol=1e-5)
+
+
+def test_lbfgs_resumes_its_trajectory_from_a_checkpoint(tmp_path):
+    """Every piece of the rule's state is named and saved, so a run restored mid-way retraces the
+    steps it took the first time; a ring index or curvature left behind would desynchronize the memory
+    from its order."""
+    A = np.array([[3.0, 0.5], [0.5, 1.0]])
+    p = trainable(np.array([5.0, -3.0]), name="w")
+    loss = 0.5 * p @ pt.constant(A, dtype=floatX) @ p
+    updates = lbfgs_updates(loss, [p], learning_rate=0.5, memory_size=2)
+    state = list(updates)
+    step = function([], loss, updates=updates)
+    for _ in range(3):
+        step()
+    path = tmp_path / "lbfgs.safetensors"
+    save_state(state, path)
+
+    first = [float(step()) for _ in range(4)]
+    load_state(state, path)
+    second = [float(step()) for _ in range(4)]
+
+    np.testing.assert_array_equal(second, first)
+
+
+def test_lbfgs_rejects_a_zero_memory_size():
+    p = trainable(np.zeros(2), name="w")
+    with pytest.raises(ValueError, match="memory_size must be at least 1"):
+        lbfgs_updates((p**2).sum(), [p], memory_size=0)
 
 
 def test_amsgrad_caps_step_after_gradient_spike():

@@ -16,6 +16,7 @@ from pytensor_ml.optim import (
     compile_train,
     cosine_schedule,
     large_step,
+    lbfgs,
     reduce_on_plateau,
     scalar_state,
     scale,
@@ -40,6 +41,37 @@ def quadratic_problem():
 def state_named(step, name):
     """Return the shared variable the compiled step writes under ``name``."""
     return next(variable for variable in step.get_shared() if variable.name == name)
+
+
+def test_lbfgs_converges_with_its_step_clipped_after_it():
+    """L-BFGS reads curvature from the parameter move and the raw gradients, so a clip after the rule
+    bounds the step without corrupting the pairs it stores, and the run still reaches the minimizer."""
+    p, loss = quadratic_problem()
+    step = compile_train(loss, chain(lbfgs(), clip_by_global_norm(0.5)))
+
+    for _ in range(10):
+        step(GOOD)
+
+    np.testing.assert_allclose(p.get_value(), 0.0, atol=1e-6)
+
+
+def test_skip_if_holds_back_all_of_the_lbfgs_state():
+    """A skipped step must leave the memory exactly as it was, or the next applied step pairs a stale
+    previous gradient with a fresh parameter and stores a pair that is not a secant."""
+    _, loss = quadratic_problem()
+    step = compile_train(loss, skip_if(lbfgs(), max_consecutive_skips=None))
+    for _ in range(2):
+        step(GOOD)
+    lbfgs_state = [variable for variable in step.get_shared() if "lbfgs/" in str(variable.name)]
+    before = {variable.name: np.array(variable.get_value()) for variable in lbfgs_state}
+
+    step(BAD)
+
+    for variable in lbfgs_state:
+        np.testing.assert_array_equal(variable.get_value(), before[variable.name])
+    step(GOOD)
+    pairs_written = state_named(step, "lbfgs/pairs_written")
+    assert int(pairs_written.get_value()) == int(before["lbfgs/pairs_written"]) + 1
 
 
 def test_clipping_bounds_a_rules_step_end_to_end():
