@@ -201,7 +201,8 @@ def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
     Stopping early would mean reading the stop flag back to Python, which ``mx.compile`` refuses while
     it traces, so the loop runs to ``max_steps`` and pays for each trial whether it needs it or not. A
     zoom search at single precision on the GPU fuses each trial's bookkeeping into one Metal kernel
-    between loss evaluations; anything else runs the search's own step graph.
+    between loss evaluations; anything else runs the search's own step graph. The choice is made once,
+    from the default device when the function is built.
     """
     kwargs.pop("storage_map", None)
     # The pieces as the linker rewrote them, converted by the backend's own OpFromGraph dispatch
@@ -218,6 +219,14 @@ def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
     # Decided from the declared dtype: mlx quietly computes a float64 graph at single precision on the
     # GPU, so the arrays reaching the loop would claim float32 for a search declared in float64.
     single_precision = declared[_FIELD["value"]] == "float32"
+    kernel = (
+        _zoom_kernel(search)
+        if isinstance(search, ZoomLineSearch)
+        and single_precision
+        and mx.metal.is_available()
+        and mx.default_device() == mx.gpu
+        else None
+    )
 
     def stepped(inputs, state):
         done = mx.array(False)
@@ -227,7 +236,7 @@ def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
             done = done | stop
         return state
 
-    def fused(inputs, state, kernel):
+    def fused(inputs, state):
         moved = (*inputs[: 2 * n_parameters], *inputs[2 * n_parameters + 3 :])
         value0, slope0, guess = inputs[2 * n_parameters : 2 * n_parameters + 3]
         anchor = mx.stack([value0, slope0, guess]).astype(mx.float32)
@@ -250,15 +259,7 @@ def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
     def line_search(*inputs):
         value0, slope0 = inputs[2 * n_parameters : 2 * n_parameters + 2]
         state = list(start(value0, slope0))
-        kernel = (
-            _zoom_kernel(search)
-            if isinstance(search, ZoomLineSearch)
-            and single_precision
-            and mx.metal.is_available()
-            and mx.default_device() == mx.gpu
-            else None
-        )
-        state = stepped(inputs, state) if kernel is None else fused(inputs, state, kernel)
+        state = stepped(inputs, state) if kernel is None else fused(inputs, state)
         return tuple(finish(*state))
 
     return line_search

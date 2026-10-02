@@ -15,33 +15,73 @@ from pytensor_ml.optim.line_search import (
     search_along,
     zoom_line_search,
 )
+from tests.dispatch.mlx.test_basic import mx
 from tests.optim.test_line_search import OBJECTIVES, PINNED
 
+# Single precision throughout, which is where the search can run as one Metal kernel per trial; the
+# barrier's 0.9 would otherwise promote its graph to float64
+SINGLE_PRECISION = {
+    **OBJECTIVES,
+    "log_barrier": lambda x: pt.sum((x - np.float32(0.9)) ** 2 - pt.log(1 - x)),
+}
 
+# The pinned cases, plus the options the pinned cases leave at their defaults, each as (case, search
+# arguments, first trial)
+CASES = {
+    **{name: (case, {}, 1.0) for name, (case, _) in PINNED.items()},
+    "capped": (PINNED["grows_until_it_brackets"][0], {"max_learning_rate": 0.1}, 1.0),
+    "armijo_only": (PINNED["zooms_into_a_bracket"][0], {"approx_dec_rtol": None}, 1.0),
+    "first_trial_not_one": (PINNED["zooms_into_a_bracket"][0], {}, 3.0),
+}
+
+DEVICES = [
+    pytest.param(
+        mx.gpu,
+        id="kernel",
+        marks=pytest.mark.skipif(not mx.metal.is_available(), reason="needs Metal"),
+    ),
+    pytest.param(mx.cpu, id="step_graph"),
+]
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("use_compile", [True, False], ids=["compiled", "eager"])
-@pytest.mark.parametrize(
-    "name", ["accepts_the_guess", "zooms_into_a_bracket", "backs_out_of_a_nan_region"]
-)
-def test_the_search_takes_the_default_backends_step(name, use_compile):
+@pytest.mark.parametrize("case, arguments, guess", CASES.values(), ids=CASES.keys())
+def test_the_search_takes_the_default_backends_step(case, arguments, guess, use_compile, device):
     """mlx runs every trial the search allows and holds the state once one is accepted, so it lands on
     the same step, after the same number of trials, as the `scan` that stops there."""
-    (objective, x0, direction_of, max_steps), _ = PINNED[name]
+    objective, x0, direction_of, max_steps = case
     # Static shapes, as parameters have: a dynamic one adds broadcast checks mlx would drop with a warning
     X = pt.vector("x", dtype="float32", shape=x0.shape)
     D = pt.vector("d", dtype="float32", shape=x0.shape)
-    # Single precision throughout, which is where the search runs as one Metal kernel per trial; the
-    # barrier's 0.9 would otherwise promote its graph to float64
-    objective_of = {
-        **OBJECTIVES,
-        "log_barrier": lambda x: pt.sum((x - np.float32(0.9)) ** 2 - pt.log(1 - x)),
-    }
-    loss = objective_of[objective](X)
+    loss = SINGLE_PRECISION[objective](X)
     assert loss.dtype == "float32"
     [gradient] = pt.grad(loss, [X])
-    result = search_along(loss, [X], [gradient], [D], zoom_line_search(max_steps))
+    search = zoom_line_search(max_steps, **arguments)
+    result = search_along(loss, [X], [gradient], [D], search, guess=guess)
     x0 = x0.astype("float32")
     direction = direction_of(pytensor.function([X], gradient)(x0)).astype("float32")
     mode = Mode(linker=MLXLinker(use_compile=use_compile), optimizer="fast_run")
+
+    with mx.stream(device):
+        on_mlx = pytensor.function([X, D], list(result), mode=mode)(x0, direction)
+    on_default = pytensor.function([X, D], list(result))(x0, direction)
+
+    np.testing.assert_allclose(float(on_mlx[0]), float(on_default[0]), rtol=1e-4)
+    assert (bool(on_mlx[1]), int(on_mlx[2])) == (bool(on_default[1]), int(on_default[2]))
+
+
+def test_a_double_precision_search_takes_the_default_backends_step():
+    """Declared in float64, the search keeps to the step graph, which mlx runs at the precision of the
+    device."""
+    (objective, x0, direction_of, max_steps), _ = PINNED["zooms_into_a_bracket"]
+    X = pt.vector("x", dtype="float64", shape=x0.shape)
+    D = pt.vector("d", dtype="float64", shape=x0.shape)
+    loss = OBJECTIVES[objective](X)
+    [gradient] = pt.grad(loss, [X])
+    result = search_along(loss, [X], [gradient], [D], zoom_line_search(max_steps))
+    direction = direction_of(pytensor.function([X], gradient)(x0))
+    mode = Mode(linker=MLXLinker(), optimizer="fast_run")
 
     on_mlx = pytensor.function([X, D], list(result), mode=mode)(x0, direction)
     on_default = pytensor.function([X, D], list(result))(x0, direction)
