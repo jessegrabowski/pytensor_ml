@@ -5,10 +5,15 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from pytensor.compile.builders import OpFromGraph
 from scipy.optimize import line_search as scipy_line_search
 
-from pytensor_ml.optim.line_search import TRIAL, find_piece, search_along, zoom_line_search
+from pytensor_ml.optim.line_search import (
+    TRIAL,
+    LineSearchOp,
+    find_piece,
+    search_along,
+    zoom_line_search,
+)
 
 X = pt.vector("x", dtype="float64")
 D = pt.vector("d", dtype="float64")
@@ -140,7 +145,7 @@ def test_the_search_is_one_node():
     loss = OBJECTIVES["quadratic"](X)
     result = search_along(loss, [X], [pt.grad(loss, X)], [D], zoom_line_search())
 
-    assert isinstance(result.step_size.owner.op, OpFromGraph)
+    assert isinstance(result.step_size.owner.op, LineSearchOp)
     assert result.step_size.owner is result.evaluations.owner
 
 
@@ -169,9 +174,9 @@ def test_hyperparameters_that_cannot_work_are_refused(arguments, message):
         zoom_line_search(**arguments)
 
 
-def test_a_piece_a_rewrite_removed_is_reported_rather_than_rebuilt():
-    """A backend runs the pieces it finds in the rewritten graph and nothing else; when one has gone, it
-    says so instead of quietly recompiling a copy under some other mode."""
+def test_a_piece_the_graph_lacks_is_reported_rather_than_rebuilt():
+    """A backend runs the pieces it finds in the rewritten graph and nothing else, so asking for one the
+    graph does not hold raises instead of recompiling a copy under some other mode."""
     loss = OBJECTIVES["quadratic"](X)
     search = search_along(loss, [X], [pt.grad(loss, X)], [D], zoom_line_search()).step_size.owner.op
 
@@ -199,6 +204,20 @@ def test_a_single_precision_search_stays_in_single_precision():
     assert result.step_size.dtype == "float32"
     np.testing.assert_allclose(step_size, expected[0], rtol=1e-5)
     assert (bool(failed), int(evaluations)) == (bool(expected[1]), int(expected[2]))
+
+
+def test_the_search_moves_shared_parameters_along_a_direction_of_them():
+    """The shape an optimizer builds: shared parameters, and directions that are expressions of them."""
+    point = pytensor.shared(ROSENBROCK_START.copy(), name="point")
+    loss = OBJECTIVES["rosenbrock"](point)
+    [gradient] = pt.grad(loss, [point])
+    result = search_along(loss, [point], [gradient], [-gradient], zoom_line_search())
+
+    step_size, failed, evaluations = pytensor.function([], list(result))()
+
+    expected = PINNED["zooms_into_a_bracket"][1]
+    np.testing.assert_allclose(step_size, expected[0], rtol=1e-9)
+    assert (bool(failed), int(evaluations)) == expected[1:]
 
 
 def test_a_parameter_the_loss_does_not_read_is_refused():
