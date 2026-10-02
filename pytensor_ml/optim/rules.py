@@ -1009,7 +1009,14 @@ def lbfgs_updates(
     curvature = flat_dot(gradient_differences, value_differences)
     gradient_change = flat_dot(gradient_differences, gradient_differences)
     epsilon = max(np.finfo(gradient.dtype).eps for gradient in gradients)
-    accept = (step_count > 0) & (curvature > epsilon * gradient_change)
+    # Near a minimum y . y underflows to zero, so the relative test alone admits a pair whose inverse
+    # curvature or identity scale overflows; both have to be representable to enter the memory.
+    accept = (
+        (step_count > 0)
+        & (curvature > epsilon * gradient_change)
+        & pt.isfinite(pt.reciprocal(curvature))
+        & pt.isfinite(curvature / gradient_change)
+    )
 
     # Rejection rewrites the slot with itself, so the write stays in place and unconditional; only the
     # count decides whether the slot is now part of the memory. The slot is a one-element index vector

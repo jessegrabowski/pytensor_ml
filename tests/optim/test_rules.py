@@ -704,6 +704,20 @@ def test_lbfgs_rejects_a_pair_with_negative_curvature():
     np.testing.assert_allclose(curvatures.get_value(), [1.0 / (y @ s), 0.0], rtol=RTOL)
 
 
+def test_lbfgs_stays_finite_after_it_converges():
+    """Past the minimum the gradient changes underflow, so ``y . y`` reaches zero while ``y . s`` is
+    still a positive subnormal; a pair admitted then stores an infinite ``1 / (y . s)`` and the next
+    step is NaN. float32 at any floatX, where the underflow arrives within a few steps."""
+    p = params.trainable(np.ones(2, dtype="float32"), name="w")
+    loss = (p**2).sum()
+    step = function([], loss, updates=lbfgs_updates(loss, [p]))
+
+    for _ in range(10):
+        step()
+
+    np.testing.assert_array_equal(p.get_value(), 0.0)
+
+
 def test_lbfgs_rejects_a_zero_memory_size():
     p = trainable(np.zeros(2), name="w")
     with pytest.raises(ValueError, match="memory_size must be at least 1"):
