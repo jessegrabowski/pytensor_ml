@@ -706,6 +706,22 @@ def test_lbfgs_rejects_a_pair_with_negative_curvature():
     np.testing.assert_allclose(curvatures.get_value(), [1.0 / (y @ s), 0.0], rtol=RTOL)
 
 
+def test_lbfgs_rejects_a_pair_whose_curvature_is_positive_but_negligible():
+    """The guard asks for ``y . s > eps * y . y``, not only a positive sign: a pair whose curvature is
+    tiny next to its gradient change would put a near-singular ``1 / (y . s)`` into the memory."""
+    g = pt.vector("g")
+    p = trainable(np.zeros(2), name="w")
+    updates = lbfgs_updates([g], [p], learning_rate=0.1, memory_size=2)
+    pairs_written = next(key for key in updates if key.name == "lbfgs/pairs_written")
+    fn = function([g], p, updates=updates)
+
+    fn(np.array([1.0, 0.0], dtype=floatX))  # s = [-0.1, 0] on the next step
+    # y = [-0.5, 1e9]: y . s = 0.05 > 0, but eps * y . y is about 1e18 * eps, far above it
+    fn(np.array([0.5, 1e9], dtype=floatX))
+
+    assert int(pairs_written.get_value()) == 0
+
+
 def test_lbfgs_stays_finite_after_it_converges():
     """Past the minimum the gradient changes underflow, so ``y . y`` reaches zero while ``y . s`` is
     still a positive subnormal; a pair admitted then stores an infinite ``1 / (y . s)`` and the next
