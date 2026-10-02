@@ -60,6 +60,8 @@ class Gradients(Updates):
 
     What :func:`to_updates` produces from a loss, and what everything ahead of the first rule in a chain
     sees. A clip placed here bounds the gradient itself, so a spike never reaches the moment estimates.
+    A rule that reads curvature from consecutive gradients, such as
+    :func:`~pytensor_ml.optim.alias.lbfgs`, needs them unclipped, so its clip goes after it.
     """
 
 

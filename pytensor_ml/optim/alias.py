@@ -374,8 +374,9 @@ def lbfgs(
     Examples
     --------
     A quasi-Newton direction from a memory of recent parameter and gradient differences, taken at a
-    fixed fraction. It reads the change between consecutive gradients as curvature, so the loss has to
-    be the same function from one step to the next: full batch, no dropout.
+    fixed fraction with no line search. It reads the change between consecutive gradients as curvature,
+    so the loss has to be the same function from one step to the next: full batch, no dropout. For the
+    same reason it takes the loss's own gradients: put a clip after it in a chain, never ahead of it.
 
     .. code-block:: python
 

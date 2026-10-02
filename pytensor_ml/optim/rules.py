@@ -927,10 +927,21 @@ def lbfgs_updates(
     accepted :math:`\gamma = \min(1, 1 / \|g\|)`, which keeps the first step inside the unit ball. The
     step is :math:`p \leftarrow p - \eta H g`.
 
-    The direction is well scaled once the memory holds a pair, so :math:`\eta = 1` is the natural rate
-    and a line search the natural way to back off from it. Consecutive gradients have to be measured on
+    The direction is well scaled once the memory holds a pair, so :math:`\eta = 1` is the natural rate.
+    The rule takes every step at that rate: there is no line search yet (pymc-devs/pytensor-ml#58), so
+    the rate is the only safeguard against a bad direction. Consecutive gradients have to be measured on
     the same objective for their difference to be curvature, so the rule assumes a deterministic,
     full-batch loss.
+
+    Three uses break that assumption. A gradient transform ahead of the rule in a chain, such as
+    :func:`~pytensor_ml.optim.clipping.clip_by_global_norm`, hands it gradients whose differences are not
+    curvature, and the rule can diverge. Clip after the rule instead: the parameter differences are read
+    off the parameters, so a clipped step still forms a valid pair. Wrapping the rule in
+    :func:`~pytensor_ml.optim.guards.skip_if` does not rescue a bad step either, because the loss is
+    deterministic and a skipped step is recomputed unchanged on the next call until the guard raises. A
+    step that a guard would skip calls for a smaller rate. Finally, a parameter written between steps,
+    with ``set_value`` for instance, forms a pair from a move the rule did not make, and that pair stays
+    in the memory for up to ``memory_size`` steps.
 
     Parameters
     ----------
@@ -946,7 +957,6 @@ def lbfgs_updates(
     scale_init_precond : bool
         Start the recursion from :math:`\gamma I` as above. When False it starts from the identity, and
         the first step is the raw gradient. Default True.
-
     namespace : str
         Prefix for every state slot this rule allocates, so two rules in one graph keep separate state
         rather than reusing each other's. Default is the rule's own name.
