@@ -178,3 +178,24 @@ def test_a_piece_a_rewrite_removed_is_reported_rather_than_rebuilt():
     assert find_piece(search, TRIAL).name == TRIAL
     with pytest.raises(RuntimeError, match="no 'missing' piece"):
         find_piece(search, "missing")
+
+
+def test_a_single_precision_search_stays_in_single_precision():
+    """Hyperparameters float32 cannot hold exactly would otherwise promote the trial step to float64,
+    which the float32 trial cannot take."""
+    x = pt.vector("x", dtype="float32", shape=(2,))
+    d = pt.vector("d", dtype="float32", shape=(2,))
+    loss = OBJECTIVES["rosenbrock"](x)
+    search = zoom_line_search(max_learning_rate=0.1, increase_factor=1.7)
+    result = search_along(loss, [x], [pt.grad(loss, x)], [d], search)
+    loss_in_double = OBJECTIVES["rosenbrock"](X)
+    in_double = search_along(loss_in_double, [X], [pt.grad(loss_in_double, X)], [D], search)
+    x0 = ROSENBROCK_START.astype("float32")
+    direction = np.full(2, 1e-3, dtype="float32")
+
+    step_size, failed, evaluations = pytensor.function([x, d], list(result))(x0, direction)
+    expected = pytensor.function([X, D], list(in_double))(x0, direction)
+
+    assert result.step_size.dtype == "float32"
+    np.testing.assert_allclose(step_size, expected[0], rtol=1e-5)
+    assert (bool(failed), int(evaluations)) == (bool(expected[1]), int(expected[2]))

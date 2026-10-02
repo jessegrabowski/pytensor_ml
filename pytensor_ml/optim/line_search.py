@@ -174,12 +174,14 @@ class ZoomLineSearch:
 
         # Both phases' candidates are cheap scalar arithmetic, so both are formed and the bracket flag
         # picks one; only the loss evaluation that follows is expensive.
-        bracketing_trial = where(pt.eq(count, 0), guess, self.increase_factor * state["stepsize"])
+        increase_factor = pt.constant(self.increase_factor, dtype=guess.dtype)
+        bracketing_trial = where(pt.eq(count, 0), guess, increase_factor * state["stepsize"])
         if self.max_learning_rate is None:
             max_reached = pt.constant(np.array(False))
         else:
-            max_reached = bracketing_trial >= self.max_learning_rate
-            bracketing_trial = pt.minimum(bracketing_trial, self.max_learning_rate)
+            max_learning_rate = pt.constant(self.max_learning_rate, dtype=guess.dtype)
+            max_reached = bracketing_trial >= max_learning_rate
+            bracketing_trial = pt.minimum(bracketing_trial, max_learning_rate)
 
         width = pt.abs(high - low)
         left = pt.minimum(high, low)
@@ -200,7 +202,7 @@ class ZoomLineSearch:
         )
         middle = where(use_cubic, cubic, where(use_quadratic, quadratic, (low + high) / 2.0))
         zooming = state["interval_found"]
-        stepsize = where(zooming, middle, bracketing_trial)
+        stepsize = where(zooming, middle, bracketing_trial).astype(guess.dtype)
 
         value, slope = value_and_slope(stepsize)
         decrease_error = self._decrease_error(stepsize, value, slope, value0, slope0)
