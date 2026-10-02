@@ -10,6 +10,7 @@ from pytensor import config
 from pytensor.gradient import disconnected_type
 from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op
+from pytensor.scalar import upcast
 from pytensor.tensor.basic import get_scalar_constant_value
 from pytensor.tensor.pad import PadMode
 from pytensor.tensor.variable import TensorVariable
@@ -55,45 +56,6 @@ def _check_reduction(reduction: str) -> None:
 def _window_span(extent: int, spacing: int) -> int:
     """How far one window reaches along an axis, once dilation has spread its taps."""
     return spacing * (extent - 1) + 1
-
-
-def _window_indices(
-    X: TensorVariable, kernel_size: Sequence[int], stride: Sequence[int], dilation: Sequence[int]
-) -> list[TensorVariable]:
-    """One advanced index per spatial axis, carrying that axis's windows and its taps.
-
-    Each broadcasts against the others, so indexing with all of them at once gives windows-then-taps in
-    order. Shared by the gather's reference graph and by the scatter that reverses it.
-    """
-    n_spatial = len(kernel_size)
-    indices = []
-    for axis, (extent, step, spacing) in enumerate(zip(kernel_size, stride, dilation)):
-        span = _window_span(extent, spacing)
-        starts = pt.arange(0, X.shape[1 + axis] - span + 1, step)
-        window = starts[:, None] + pt.arange(extent)[None, :] * spacing
-
-        pattern: list[int | str] = ["x"] * (2 * n_spatial)
-        pattern[axis] = 0
-        pattern[n_spatial + axis] = 1
-        indices.append(window.dimshuffle(*pattern))
-    return indices
-
-
-def _scatter_patches(
-    cotangent: TensorVariable,
-    X: TensorVariable,
-    kernel_size: Sequence[int],
-    stride: Sequence[int],
-    dilation: Sequence[int],
-) -> TensorVariable:
-    """Add each window's cotangent back at the position it was gathered from.
-
-    Windows overlap, so a position reached by several of them accumulates all of their contributions --
-    which is why this is a scatter-add rather than an assignment.
-    """
-    indices = _window_indices(X, kernel_size, stride, dilation)
-    zeros = pt.zeros(X.shape, dtype=cotangent.dtype)
-    return pt.inc_subtensor(zeros[(slice(None), *indices, slice(None))], cotangent)
 
 
 class Im2Col(Op):
@@ -281,36 +243,6 @@ class Col2Im(Op):
         (cotangent,) = cotangents
         gathered = Im2Col(self.kernel_size, self.stride, self.dilation)(cotangent)
         return [gathered, *(disconnected_type() for _ in self.kernel_size)]
-
-
-def _extract_patches(
-    X: TensorVariable,
-    kernel_size: Sequence[int],
-    stride: Sequence[int],
-    dilation: Sequence[int],
-) -> TensorVariable:
-    """
-    Gather every window a kernel visits, for an input with any number of spatial axes.
-
-    Parameters
-    ----------
-    X : TensorVariable
-        Input of shape ``(batch, *spatial, channels)``.
-    kernel_size : sequence of int
-        Window extent along each spatial axis. Its length is the number of spatial axes.
-    stride : sequence of int
-        Step between windows along each spatial axis.
-    dilation : sequence of int
-        Spacing between the taps of one window along each spatial axis.
-
-    Returns
-    -------
-    patches : TensorVariable
-        Shape ``(batch, *out_spatial, *kernel_size, channels)``, where ``out_spatial`` counts the
-        windows that fit.
-    """
-    indices = _window_indices(X, kernel_size, stride, dilation)
-    return X[(slice(None), *indices, slice(None))]
 
 
 class ConvLayer(UnaryLayerOp):
@@ -1305,16 +1237,19 @@ def _nearest_source_indices(
 
 
 def _linear_source_coordinates(
-    in_extent: int | TensorVariable, out_extent: int | TensorVariable, align_corners: bool
+    in_extent: int | TensorVariable,
+    out_extent: int | TensorVariable,
+    align_corners: bool,
+    dtype: str,
 ) -> TensorVariable:
     """Fractional input position each output position samples, in input coordinates. Without
     ``align_corners`` the outermost samples fall outside the input, which is what the clamp handles."""
     # Cast the extents before dividing: they arrive as int64, and an int64 division is float64,
-    # which would carry the whole interpolation off floatX and back in the layer's output.
-    in_span = pt.cast(in_extent, config.floatX)
-    out_span = pt.cast(out_extent, config.floatX)
+    # which would carry the whole interpolation off ``dtype`` and back in the layer's output.
+    in_span = pt.cast(in_extent, dtype)
+    out_span = pt.cast(out_extent, dtype)
 
-    positions = pt.arange(out_extent, dtype=config.floatX)
+    positions = pt.arange(out_extent, dtype=dtype)
     if align_corners:
         # The maximum keeps a single-element output spreading over nothing rather than dividing by it.
         source = positions * ((in_span - 1) / pt.maximum(out_span - 1, 1.0))
@@ -1335,7 +1270,11 @@ def _resample_axis(
     if mode == "nearest":
         return pt.take(X, _nearest_source_indices(in_extent, out_extent), axis=axis)
 
-    source = _linear_source_coordinates(in_extent, out_extent, align_corners)
+    # Positions are computed at float32 or wider, because float16 cannot count past 2048 exactly, and
+    # the weights are then cast to the input's dtype so the output keeps it.
+    is_float = X.dtype.startswith("float")
+    coordinate_dtype = upcast(X.dtype, "float32") if is_float else config.floatX
+    source = _linear_source_coordinates(in_extent, out_extent, align_corners, coordinate_dtype)
     lower_position = pt.floor(source)
     lower_index = pt.cast(lower_position, "int64")
     upper_index = pt.minimum(lower_index + 1, in_extent - 1)
@@ -1343,6 +1282,8 @@ def _resample_axis(
     # The weight varies along `axis` alone, so it broadcasts against every other axis of the gather.
     along_axis = (np.newaxis,) * axis + (slice(None),) + (np.newaxis,) * (X.ndim - axis - 1)
     weight = (source - lower_position)[along_axis]
+    if is_float:
+        weight = weight.astype(X.dtype)
 
     lower = pt.take(X, lower_index, axis=axis)
     upper = pt.take(X, upper_index, axis=axis)

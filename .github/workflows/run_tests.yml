@@ -35,13 +35,17 @@ jobs:
             paths: |
               tests/test_transformer.py
               tests/test_layers.py
+          - name: recurrent
+            paths: |
               tests/test_recurrent.py
+              tests/rewriting/
+          - name: convolution
+            paths: |
               tests/test_conv.py
               tests/test_conv_transpose.py
               tests/test_padding.py
               tests/test_pool.py
               tests/test_upsample.py
-              tests/rewriting/
           - name: optim
             paths: |
               tests/optim/

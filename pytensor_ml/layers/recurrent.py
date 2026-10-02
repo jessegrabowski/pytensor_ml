@@ -229,7 +229,10 @@ class Recurrent(Layer):
     ) -> tuple[TensorVariable, ...]:
         """Take the step, then keep it only where ``mask_t`` says this step is real."""
         # The step runs either way -- scan's carried states are fixed-shape buffers, so there is no
-        # skipping a subset of the batch, only discarding what it computed for them.
+        # skipping a subset of the batch, only discarding what it computed for them. Padding is zeroed
+        # first because the switch below still sends its zero cotangent through the step's derivative
+        # at the pad, and a non-finite pad turns that product into NaN.
+        x_t = pt.switch(pt.shape_padright(mask_t, x_t.ndim - mask_t.ndim), x_t, 0)
         stepped = self.cell.step(x_t, *state)
         # One trailing axis per feature axis of the state, so the mask lines its batch axes up against
         # the state's however many feature axes the cell chose to carry.
