@@ -132,3 +132,10 @@ Low-level update functions
     adagrad_updates
     adadelta_updates
     lbfgs_updates
+
+.. currentmodule:: pytensor_ml.optim.lbfgs
+
+.. autosummary::
+    :toctree: generated/
+
+    LBFGSDirection
