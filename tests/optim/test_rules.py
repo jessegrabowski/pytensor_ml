@@ -34,7 +34,7 @@ from pytensor_ml.optim import (
 )
 from pytensor_ml.optim import alias as alias_module
 from pytensor_ml.pytensorf import function
-from tests.optim.test_lbfgs import dense_inverse_hessian
+from tests.optim.lbfgs_reference import dense_inverse_hessian
 
 floatX = pytensor.config.floatX
 

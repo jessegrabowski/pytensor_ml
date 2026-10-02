@@ -13,7 +13,7 @@ from pytensor_ml.optim.lbfgs import LBFGSDirection
 from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import function
 from tests.dispatch.mlx.test_basic import compare_mlx_and_py, mlx_mode
-from tests.optim.test_lbfgs import dense_inverse_hessian, ring_stacks
+from tests.optim.lbfgs_reference import dense_inverse_hessian, ring_stacks
 
 floatX = pytensor.config.floatX
 
