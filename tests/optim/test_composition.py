@@ -16,6 +16,7 @@ from pytensor_ml.optim import (
     compile_train,
     cosine_schedule,
     large_step,
+    lbfgs,
     reduce_on_plateau,
     scalar_state,
     scale,
@@ -40,6 +41,18 @@ def quadratic_problem():
 def state_named(step, name):
     """Return the shared variable the compiled step writes under ``name``."""
     return next(variable for variable in step.get_shared() if variable.name == name)
+
+
+def test_lbfgs_converges_with_its_step_clipped_after_it():
+    """L-BFGS reads curvature from the parameter move and the raw gradients, so a clip after the rule
+    bounds the step without corrupting the pairs it stores, and the run still reaches the minimizer."""
+    p, loss = quadratic_problem()
+    step = compile_train(loss, chain(lbfgs(), clip_by_global_norm(0.5)))
+
+    for _ in range(10):
+        step(GOOD)
+
+    np.testing.assert_allclose(p.get_value(), 0.0, atol=1e-6)
 
 
 def test_clipping_bounds_a_rules_step_end_to_end():
