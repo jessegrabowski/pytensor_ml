@@ -127,7 +127,7 @@ class ZoomLineSearch:
         zero = pt.zeros((), dtype=value.dtype)
         no = pt.constant(np.array(False))
         infinite = pt.constant(np.inf, dtype=value.dtype)
-        return {
+        state = {
             "count": pt.constant(0, dtype="int64"),
             "stepsize": zero,
             "value": value,
@@ -148,6 +148,7 @@ class ZoomLineSearch:
             "safe_stepsize": zero,
             "safe_value": value,
         }
+        return {field: state[field] for field in _ZOOM_FIELDS}
 
     def _decrease_error(self, stepsize, value, slope, value0, slope0):
         """How far a trial misses sufficient decrease, by Armijo or by the approximate Wolfe test."""
