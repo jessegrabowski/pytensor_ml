@@ -467,9 +467,9 @@ def search_along(
 
     Each trial evaluates ``loss`` and its gradients with every parameter moved to ``p + t * d``, inside a
     ``scan`` that stops at the first trial the search accepts. The loop is one ``OpFromGraph`` node in
-    the graph it returns. numba and the default backends run that ``scan`` directly. JAX runs the same
-    search through optax, which has to be installed for it, and mlx runs every trial its budget allows,
-    holding the state once one is accepted.
+    the graph it returns. numba and the default backends run that ``scan`` directly, JAX runs its step
+    in a ``lax.while_loop``, and mlx runs every trial its budget allows, holding the state once one is
+    accepted.
 
     Parameters
     ----------
