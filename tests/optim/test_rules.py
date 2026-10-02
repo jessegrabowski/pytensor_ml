@@ -615,11 +615,13 @@ def test_lbfgs_first_step_is_the_gradient_capped_to_the_unit_ball(gradient):
     np.testing.assert_allclose(p.get_value(), -min(1.0, 1.0 / np.linalg.norm(g)) * g, rtol=RTOL)
 
 
-def test_lbfgs_step_matches_the_dense_update_through_a_ring_wrap():
+@pytest.mark.parametrize("memory_size", [1, 2], ids=["one_slot", "two_slots"])
+def test_lbfgs_step_matches_the_dense_update_through_a_ring_wrap(memory_size):
     """On a strictly convex quadratic every pair is accepted, so the memory is the last ``memory_size``
-    chronological pairs and each step is ``-lr * H g`` for the dense BFGS matrix built from them. Two
-    slots over six steps wrap the ring twice; a rule that overwrote the wrong slot or read the newest
-    pair off by one would drift from the dense reference from the third step on."""
+    chronological pairs and each step is ``-lr * H g`` for the dense BFGS matrix built from them. Over
+    six steps one slot is overwritten every step, where the newest pair is also the oldest, and two slots
+    wrap the ring twice; a rule that overwrote the wrong slot or read the newest pair off by one would
+    drift from the dense reference from the third step on."""
     A = np.diag([1.0, 2.0, 3.0, 4.0, 5.0]) + 0.1
     A = A @ A.T
     b = np.array([0.3, -1.0, 2.0, 0.5, -0.7])
@@ -627,7 +629,7 @@ def test_lbfgs_step_matches_the_dense_update_through_a_ring_wrap():
     v = trainable(np.array([3.0, 1.0]), name="v")
     x = pt.concatenate([u, v])
     loss = 0.5 * x @ pt.constant(A, dtype=floatX) @ x - pt.constant(b, dtype=floatX) @ x
-    memory_size, lr = 2, 0.5
+    lr = 0.5
     updates = lbfgs_updates(loss, [u, v], learning_rate=lr, memory_size=memory_size)
     step = function([], pt.grad(loss, [u, v]), updates=updates)  # gradient before the update
 
