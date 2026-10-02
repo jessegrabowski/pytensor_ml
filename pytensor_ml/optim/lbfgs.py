@@ -82,11 +82,12 @@ class LBFGSDirection(SymbolicOp):
     def filter_inputs(*inputs: Variable | float | int) -> tuple[Variable, ...]:
         count, gamma, rho, *raw = inputs
         tensors = [pt.as_tensor_variable(tensor) for tensor in raw]
-        # The curvatures are cross-parameter dot products, so they live at the widest parameter dtype.
+        # The curvatures and gamma come from cross-parameter dot products, so they live at the widest
+        # parameter dtype.
         curvature_dtype = upcast(*(tensor.dtype for tensor in tensors))
         return (
             _scalar_at(count, "int64"),
-            _scalar_at(gamma, tensors[0].dtype),
+            _scalar_at(gamma, curvature_dtype),
             pt.as_tensor_variable(rho).astype(curvature_dtype),
             *tensors,
         )
