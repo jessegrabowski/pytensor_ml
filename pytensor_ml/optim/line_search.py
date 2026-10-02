@@ -9,7 +9,7 @@ import pytensor.tensor as pt
 from pytensor.compile.builders import OpFromGraph
 from pytensor.graph.basic import Constant, Variable
 from pytensor.graph.replace import graph_replace
-from pytensor.graph.traversal import truncated_graph_inputs
+from pytensor.graph.traversal import ancestors, truncated_graph_inputs
 from pytensor.scan.utils import until
 from pytensor.tensor import TensorVariable
 
@@ -499,6 +499,15 @@ def search_along(
             f"A line search evaluates the loss at several trial points, so a loss that draws random "
             f"numbers would draw again at each one. This loss draws from {names}; remove the randomness "
             f"(dropout, sampling) from the graph the optimizer sees."
+        )
+
+    loss_inputs = set(ancestors([loss]))
+    unused = [parameter for parameter in parameters if parameter not in loss_inputs]
+    if unused:
+        names = ", ".join(str(parameter) for parameter in unused)
+        raise ValueError(
+            f"The loss does not depend on {names}, so a line search has nothing to measure moving it "
+            f"by. Leave it out of the parameters searched over."
         )
 
     dtype = loss.dtype

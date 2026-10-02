@@ -199,3 +199,11 @@ def test_a_single_precision_search_stays_in_single_precision():
     assert result.step_size.dtype == "float32"
     np.testing.assert_allclose(step_size, expected[0], rtol=1e-5)
     assert (bool(failed), int(evaluations)) == (bool(expected[1]), int(expected[2]))
+
+
+def test_a_parameter_the_loss_does_not_read_is_refused():
+    unused = pt.vector("unused", dtype="float64")
+    loss = OBJECTIVES["quadratic"](X)
+
+    with pytest.raises(ValueError, match="does not depend on unused"):
+        search_along(loss, [X, unused], [X - 3.0, unused], [D, unused], zoom_line_search())
