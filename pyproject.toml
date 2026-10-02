@@ -55,6 +55,7 @@ dev = [
     "scikit-learn",
     "mypy",
     "jax",
+    "optax",
     "pyyaml",
 ]
 examples = [
