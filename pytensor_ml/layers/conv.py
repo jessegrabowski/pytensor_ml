@@ -10,6 +10,7 @@ from pytensor import config
 from pytensor.gradient import disconnected_type
 from pytensor.graph.basic import Apply, Variable
 from pytensor.graph.op import Op
+from pytensor.scalar import upcast
 from pytensor.tensor.basic import get_scalar_constant_value
 from pytensor.tensor.pad import PadMode
 from pytensor.tensor.variable import TensorVariable
@@ -1305,16 +1306,19 @@ def _nearest_source_indices(
 
 
 def _linear_source_coordinates(
-    in_extent: int | TensorVariable, out_extent: int | TensorVariable, align_corners: bool
+    in_extent: int | TensorVariable,
+    out_extent: int | TensorVariable,
+    align_corners: bool,
+    dtype: str,
 ) -> TensorVariable:
     """Fractional input position each output position samples, in input coordinates. Without
     ``align_corners`` the outermost samples fall outside the input, which is what the clamp handles."""
     # Cast the extents before dividing: they arrive as int64, and an int64 division is float64,
-    # which would carry the whole interpolation off floatX and back in the layer's output.
-    in_span = pt.cast(in_extent, config.floatX)
-    out_span = pt.cast(out_extent, config.floatX)
+    # which would carry the whole interpolation off ``dtype`` and back in the layer's output.
+    in_span = pt.cast(in_extent, dtype)
+    out_span = pt.cast(out_extent, dtype)
 
-    positions = pt.arange(out_extent, dtype=config.floatX)
+    positions = pt.arange(out_extent, dtype=dtype)
     if align_corners:
         # The maximum keeps a single-element output spreading over nothing rather than dividing by it.
         source = positions * ((in_span - 1) / pt.maximum(out_span - 1, 1.0))
@@ -1335,7 +1339,11 @@ def _resample_axis(
     if mode == "nearest":
         return pt.take(X, _nearest_source_indices(in_extent, out_extent), axis=axis)
 
-    source = _linear_source_coordinates(in_extent, out_extent, align_corners)
+    # Positions are computed at float32 or wider, because float16 cannot count past 2048 exactly, and
+    # the weights are then cast to the input's dtype so the output keeps it.
+    is_float = X.dtype.startswith("float")
+    coordinate_dtype = upcast(X.dtype, "float32") if is_float else config.floatX
+    source = _linear_source_coordinates(in_extent, out_extent, align_corners, coordinate_dtype)
     lower_position = pt.floor(source)
     lower_index = pt.cast(lower_position, "int64")
     upper_index = pt.minimum(lower_index + 1, in_extent - 1)
@@ -1343,6 +1351,8 @@ def _resample_axis(
     # The weight varies along `axis` alone, so it broadcasts against every other axis of the gather.
     along_axis = (np.newaxis,) * axis + (slice(None),) + (np.newaxis,) * (X.ndim - axis - 1)
     weight = (source - lower_position)[along_axis]
+    if is_float:
+        weight = weight.astype(X.dtype)
 
     lower = pt.take(X, lower_index, axis=axis)
     upper = pt.take(X, upper_index, axis=axis)

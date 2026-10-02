@@ -176,6 +176,16 @@ def test_resampling_keeps_the_input_dtype(dtype, mode):
         assert Upsample2D(scale_factor=2, mode=mode)(X).dtype == dtype
 
 
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+def test_bilinear_keeps_an_input_narrower_than_floatx(dtype):
+    """The interpolation weights are built from integer extents, and casting them to floatX would carry
+    a float32 or float16 input up to float64 under the default config."""
+    with pytensor.config.change_flags(floatX="float64"):
+        X = pt.tensor("X", shape=(None, 3, 4, 2), dtype=dtype)
+
+        assert Upsample2D(scale_factor=2, mode="bilinear")(X).dtype == dtype
+
+
 # Every way of asking for a resampling that means nothing. `mode` is spelled for its rank, so the
 # name that works on one class is wrong on the other rather than a harmless alias.
 REJECTED_CONFIGURATIONS = [
