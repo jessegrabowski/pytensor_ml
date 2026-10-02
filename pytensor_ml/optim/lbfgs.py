@@ -5,6 +5,7 @@ import pytensor.tensor as pt
 
 from pytensor.compile.builders import SymbolicOp
 from pytensor.graph.basic import Variable
+from pytensor.scalar import upcast
 from pytensor.tensor import TensorVariable
 
 
@@ -12,18 +13,18 @@ class LBFGSDirection(SymbolicOp):
     r"""
     Multiply a gradient by the L-BFGS inverse-Hessian approximation that a ring-buffered memory defines.
 
-    Inputs are ``count, gamma, g_1..g_n, S_1..S_n, Y_1..Y_n`` and outputs are ``d_1..d_n = H g``, one per
-    parameter. ``S_p`` and ``Y_p`` are ``(memory_size, *shape)`` stacks of past parameter differences
+    Inputs are ``count, gamma, rho, g_1..g_n, S_1..S_n, Y_1..Y_n`` and outputs are ``d_1..d_n = H g``, one
+    per parameter. ``S_p`` and ``Y_p`` are ``(memory_size, *shape)`` stacks of past parameter differences
     :math:`s` and gradient differences :math:`y` for parameter ``p``, written as a ring: slot
     ``(count - 1) % memory_size`` holds the newest pair and ``count`` is the number of pairs written so
-    far. A slot that holds nothing yet is all zeros and contributes nothing to the recursion, and a
-    writer retires a slot the same way. The op applies whatever pairs it is given: admitting only pairs
-    with :math:`y^\top s > 0`, which keeps the approximation positive definite, is the writer's job.
+    far. ``rho`` is the ``(memory_size,)`` vector of each slot's curvature :math:`\rho_i = 1 / (y_i^\top
+    s_i)`. A slot that holds nothing yet has zero stacks and a zero ``rho`` and contributes nothing to the
+    recursion, and a writer retires a slot the same way. The op applies whatever pairs it is given: admitting only
+    pairs with :math:`y^\top s > 0`, which keeps the approximation positive definite, is the writer's job.
 
-    The product is the two-loop recursion, algorithm 7.4 of :cite:t:`nocedal2006numerical`, with
-    :math:`\rho_i = 1 / (y_i^\top s_i)`. Each dot product sums over every parameter, so the memory of a
-    model with several parameters is treated as one vector and never copied into one. Starting from
-    :math:`\gamma I`,
+    The product is the two-loop recursion, algorithm 7.4 of :cite:t:`nocedal2006numerical`. Each dot
+    product sums over every parameter, so the memory of a model with several parameters is treated as one
+    vector and never copied into one. Starting from :math:`\gamma I`,
 
     .. math::
 
@@ -54,10 +55,11 @@ class LBFGSDirection(SymbolicOp):
         from pytensor_ml.optim.lbfgs import LBFGSDirection
 
         g = pt.vector("g")
+        rho = pt.vector("rho")
         S = pt.matrix("S")
         Y = pt.matrix("Y")
-        d = LBFGSDirection(n_parameters=1, memory_size=4)(1, 1.0, g, S, Y)
-        direction = pytensor.function([g, S, Y], d)
+        d = LBFGSDirection(n_parameters=1, memory_size=4)(1, 1.0, rho, g, S, Y)
+        direction = pytensor.function([rho, g, S, Y], d)
 
     References
     ----------
@@ -77,17 +79,28 @@ class LBFGSDirection(SymbolicOp):
 
     @staticmethod
     def filter_inputs(*inputs: Variable | float | int) -> tuple[Variable, ...]:
-        count, gamma, *raw = inputs
+        count, gamma, rho, *raw = inputs
         tensors = [pt.as_tensor_variable(tensor) for tensor in raw]
-        return (_scalar_at(count, "int64"), _scalar_at(gamma, tensors[0].dtype), *tensors)
+        # The curvatures are cross-parameter dot products, so they live at the widest parameter dtype.
+        curvature_dtype = upcast(*(tensor.dtype for tensor in tensors))
+        return (
+            _scalar_at(count, "int64"),
+            _scalar_at(gamma, tensors[0].dtype),
+            pt.as_tensor_variable(rho).astype(curvature_dtype),
+            *tensors,
+        )
 
     def build_inner_graph(self, *inputs: TensorVariable) -> list[Variable]:
         n, m = self.n_parameters, self.memory_size
-        count, gamma, *tensors = inputs
+        count, gamma, rho, *tensors = inputs
         if len(tensors) != 3 * n:
             raise ValueError(
-                f"LBFGSDirection with n_parameters={n} takes {3 * n} tensors after count and gamma, a "
-                f"gradient and two memory stacks per parameter, but got {len(tensors)}."
+                f"LBFGSDirection with n_parameters={n} takes {3 * n} tensors after count, gamma and rho, "
+                f"a gradient and two memory stacks per parameter, but got {len(tensors)}."
+            )
+        if rho.type.ndim != 1 or rho.type.shape[0] not in (None, m):
+            raise ValueError(
+                f"rho must be a vector of one curvature per slot (memory_size={m}), but got {rho.type}."
             )
         gradients = tensors[:n]
         S = tensors[n : 2 * n]
@@ -97,12 +110,11 @@ class LBFGSDirection(SymbolicOp):
                 _require_stack_of(stack, gradient, m, index)
 
         order = (count + pt.arange(m)) % m
-        curvatures = _curvatures(S, Y, m)
 
         def right_product(slot, *vector):
             s = [stack[slot] for stack in S]
             y = [stack[slot] for stack in Y]
-            alpha = curvatures[slot] * flat_dot(s, vector)
+            alpha = rho[slot] * flat_dot(s, vector)
             return [v - alpha.astype(v.dtype) * y_p for v, y_p in zip(vector, y)] + [alpha]
 
         *q, alphas = pytensor.scan(
@@ -117,7 +129,7 @@ class LBFGSDirection(SymbolicOp):
         def left_product(slot, alpha, *vector):
             s = [stack[slot] for stack in S]
             y = [stack[slot] for stack in Y]
-            beta = curvatures[slot] * flat_dot(y, vector)
+            beta = rho[slot] * flat_dot(y, vector)
             return [v + (alpha - beta).astype(v.dtype) * s_p for v, s_p in zip(vector, s)]
 
         # The backward loop reports its alphas newest first and the forward loop reads them oldest first.
@@ -160,16 +172,3 @@ def _require_stack_of(
 def flat_dot(left: Sequence[TensorVariable], right: Sequence[TensorVariable]) -> TensorVariable:
     """Dot product of two lists of tensors read as one flat vector each, through BLAS under numba."""
     return pt.sum([pt.dot(a.ravel(), b.ravel()) for a, b in zip(left, right)])
-
-
-def _curvatures(
-    S: Sequence[TensorVariable], Y: Sequence[TensorVariable], memory_size: int
-) -> TensorVariable:
-    """Return ``1 / (y_i . s_i)`` per slot, and zero for an empty slot rather than a division by zero."""
-    # The same dot the writer's admission test uses, so a pair it admitted never rounds to a negative
-    # curvature here.
-    products = pt.stack(
-        [flat_dot([s[slot] for s in S], [y[slot] for y in Y]) for slot in range(memory_size)]
-    )
-    empty = pt.eq(products, 0.0)
-    return pt.switch(empty, 0.0, 1.0 / pt.switch(empty, 1.0, products))

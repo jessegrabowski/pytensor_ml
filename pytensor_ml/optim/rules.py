@@ -1,11 +1,13 @@
 from collections.abc import Callable, Sequence
 
 import numpy as np
+import pytensor
 import pytensor.tensor as pt
 
 from pytensor import config
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.basic import Variable
+from pytensor.scalar import upcast
 from pytensor.tensor import TensorVariable
 
 from pytensor_ml.optim.base import (
@@ -992,6 +994,13 @@ def lbfgs_updates(
         state_for(p, f"{namespace}/gradient_differences", history_size=memory_size)
         for p in parameters
     ]
+    # One curvature per slot, at the dtype of the cross-parameter dot that measures it. A slot that holds
+    # no pair keeps a zero, which the recursion reads as a pair that contributes nothing.
+    curvatures = pytensor.shared(
+        np.zeros(memory_size, dtype=upcast(*(gradient.dtype for gradient in gradients))),
+        name=f"{namespace}/curvatures",
+        shape=(memory_size,),
+    )
 
     # The buffers hold zeros before the first step, so the differences read off them are meaningless
     # until a previous point exists; the guard below never lets those into the memory.
@@ -1014,6 +1023,12 @@ def lbfgs_updates(
         pt.set_subtensor(memory[slot], pt.switch(accept, y[None], memory[slot]))
         for memory, y in zip(gradient_memory, gradient_differences)
     ]
+    # Stored inverted, from the very dot the guard tested, so an admitted pair's curvature is positive by
+    # construction. The divisor is swapped out on rejection so a zero curvature never reaches it.
+    rho = pt.reciprocal(pt.switch(accept, curvature, 1.0)).astype(curvatures.dtype)
+    new_curvatures = pt.set_subtensor(
+        curvatures[slot], pt.switch(accept, rho[None], curvatures[slot])
+    )
     new_pairs_written = pairs_written + accept.astype(pairs_written.dtype)
 
     if scale_init_precond:
@@ -1035,6 +1050,7 @@ def lbfgs_updates(
     directions = LBFGSDirection(n_parameters=len(parameters), memory_size=memory_size)(
         new_pairs_written,
         identity_scale,
+        new_curvatures,
         *gradients,
         *new_value_memory,
         *new_gradient_memory,
@@ -1044,6 +1060,7 @@ def lbfgs_updates(
     updates: Updates = Steps(incoming)
     updates[step_count] = step_count + 1
     updates[pairs_written] = new_pairs_written
+    updates[curvatures] = new_curvatures
     for index, parameter in enumerate(parameters):
         updates[previous_values[index]] = parameter
         updates[previous_gradients[index]] = gradients[index]

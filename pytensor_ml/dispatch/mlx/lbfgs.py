@@ -20,7 +20,7 @@ def mlx_funcify_LBFGSDirection(op, node=None, **kwargs):
         # one threadgroup and was slower than a fused reduction by two orders of magnitude.
         return sum(a.reshape(-1) @ b.reshape(-1) for a, b in zip(left, right))
 
-    def direction(count, gamma, *tensors):
+    def direction(count, gamma, rho, *tensors):
         gradients = tensors[:n]
         S = tensors[n : 2 * n]
         Y = tensors[2 * n :]
@@ -29,12 +29,7 @@ def mlx_funcify_LBFGSDirection(op, node=None, **kwargs):
         order = [(count + offset) % m for offset in range(m)]
         s_rows = [rows(S, slot) for slot in order]
         y_rows = [rows(Y, slot) for slot in order]
-        curvatures = []
-        for s, y in zip(s_rows, y_rows):
-            product = dot(s, y)
-            curvatures.append(
-                mx.where(product == 0, 0.0, 1.0 / mx.where(product == 0, 1.0, product))
-            )
+        curvatures = [mx.take(rho, slot) for slot in order]
 
         vector = list(gradients)
         alphas = [None] * m

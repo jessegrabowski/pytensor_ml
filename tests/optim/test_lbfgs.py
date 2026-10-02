@@ -24,9 +24,11 @@ def dense_inverse_hessian(gamma, pairs, size):
 
 
 def ring_stacks(pairs, memory_size, count, shapes):
-    """Lay chronological flat pairs into per-parameter ring stacks, newest at ``(count - 1) % memory_size``."""
+    """Lay chronological flat pairs into per-parameter ring stacks, newest at ``(count - 1) % memory_size``,
+    and each slot's curvature ``1 / (y . s)`` into a vector beside them, zero where a slot is empty."""
     S = [np.zeros((memory_size, *shape), dtype=floatX) for shape in shapes]
     Y = [np.zeros((memory_size, *shape), dtype=floatX) for shape in shapes]
+    rho = np.zeros(memory_size, dtype=floatX)
     splits = np.cumsum([int(np.prod(shape)) for shape in shapes])[:-1]
     for age, (s, y) in enumerate(reversed(pairs)):
         slot = (count - 1 - age) % memory_size
@@ -34,7 +36,8 @@ def ring_stacks(pairs, memory_size, count, shapes):
             stack[slot] = piece.reshape(stack.shape[1:])
         for stack, piece in zip(Y, np.split(y, splits)):
             stack[slot] = piece.reshape(stack.shape[1:])
-    return S, Y
+        rho[slot] = 1.0 / (y.astype(np.float64) @ s.astype(np.float64))
+    return S, Y, rho
 
 
 @pytest.mark.parametrize("n_pairs, count", [(2, 2), (4, 6)], ids=["not_yet_wrapped", "wrapped"])
@@ -53,14 +56,15 @@ def test_direction_matches_the_two_loop_recursion_over_a_ring(n_pairs, count):
         s = rng.normal(size=size).astype(floatX)
         noise = rng.normal(size=size).astype(floatX)
         pairs.append((s, noise - (noise @ s) / (s @ s) * s + 0.5 * s))  # y . s = 0.5 s . s > 0
-    S, Y = ring_stacks(pairs, memory_size, count, shapes)
+    S, Y, rho = ring_stacks(pairs, memory_size, count, shapes)
 
     op = LBFGSDirection(n_parameters=2, memory_size=memory_size)
     gradients = [pt.tensor(f"g{i}", shape=shape) for i, shape in enumerate(shapes)]
     S_in = [pt.tensor(f"S{i}", shape=(memory_size, *shape)) for i, shape in enumerate(shapes)]
     Y_in = [pt.tensor(f"Y{i}", shape=(memory_size, *shape)) for i, shape in enumerate(shapes)]
     direction = function(
-        [*gradients, *S_in, *Y_in], op(count, gamma, *gradients, *S_in, *Y_in, return_list=True)
+        [*gradients, *S_in, *Y_in],
+        op(count, gamma, rho, *gradients, *S_in, *Y_in, return_list=True),
     )
 
     splits = np.cumsum([int(np.prod(shape)) for shape in shapes])[:-1]
@@ -81,7 +85,7 @@ def test_parameters_of_different_dtypes_keep_their_own():
     S_narrow, Y_narrow = (pt.tensor(name, shape=(2, 2), dtype="float32") for name in ("s", "y"))
 
     wide, narrow = LBFGSDirection(n_parameters=2, memory_size=2)(
-        1, 0.5, g_wide, g_narrow, S_wide, S_narrow, Y_wide, Y_narrow, return_list=True
+        1, 0.5, np.zeros(2), g_wide, g_narrow, S_wide, S_narrow, Y_wide, Y_narrow, return_list=True
     )
 
     assert (wide.dtype, narrow.dtype) == ("float64", "float32")
@@ -92,7 +96,7 @@ def test_a_scalar_parameter_has_vector_stacks():
     S = pt.vector("S", dtype=floatX)
     Y = pt.vector("Y", dtype=floatX)
 
-    d = LBFGSDirection(n_parameters=1, memory_size=3)(1, 1.0, g, S, Y)
+    d = LBFGSDirection(n_parameters=1, memory_size=3)(1, 1.0, [0.0, 0.0, 1 / (1.5 * 3.0)], g, S, Y)
 
     # One pair (s, y) with y = 2 s: H y = s, so H maps g onto g / 2.
     np.testing.assert_allclose(
@@ -111,10 +115,25 @@ def test_an_empty_memory_scales_the_gradient():
     S = np.zeros((3, 5), dtype="float32")
     Y = np.zeros((3, 5), dtype="float32")
 
-    d = LBFGSDirection(n_parameters=1, memory_size=3)(0, 0.25, g, S, Y)
+    d = LBFGSDirection(n_parameters=1, memory_size=3)(0, 0.25, np.zeros(3), g, S, Y)
 
     assert d.dtype == "float32"
     np.testing.assert_allclose(d.eval(), 0.25 * g, rtol=1e-6)
+
+
+def test_a_zero_curvature_retires_its_slot_whatever_the_stacks_hold():
+    # The op applies the curvatures it is given and never measures them from the stacks, so a slot whose
+    # curvature is zero drops out of the recursion even with a pair still written in it.
+    rng = np.random.default_rng(2)
+    g = rng.normal(size=4).astype(floatX)
+    s = rng.normal(size=4).astype(floatX)
+    y = (s + 0.5 * rng.normal(size=4)).astype(floatX)
+    S = np.stack([s, np.zeros_like(s)])
+    Y = np.stack([y, np.zeros_like(y)])
+
+    d = LBFGSDirection(n_parameters=1, memory_size=2)(1, 0.5, np.zeros(2), g, S, Y)
+
+    np.testing.assert_allclose(d.eval(), 0.5 * g, rtol=RTOL)
 
 
 @pytest.mark.parametrize(
@@ -123,31 +142,44 @@ def test_an_empty_memory_scales_the_gradient():
         ({"n_parameters": 0, "memory_size": 3}, (), "n_parameters must be at least 1"),
         (
             {"n_parameters": 1, "memory_size": 0},
-            (np.ones(2), np.ones((0, 2)), np.ones((0, 2))),
+            (np.ones(0), np.ones(2), np.ones((0, 2)), np.ones((0, 2))),
             "memory_size must be at least 1",
         ),
         (
             {"n_parameters": 1, "memory_size": 3},
-            (np.ones(2), np.ones((3, 2)), np.ones((3, 2)), np.ones((3, 2))),
+            (np.ones(3), np.ones(2), np.ones((3, 2)), np.ones((3, 2)), np.ones((3, 2))),
             "takes 3 tensors",
         ),
         (
             {"n_parameters": 1, "memory_size": 3},
-            (np.ones(2), np.ones((4, 2)), np.ones((3, 2))),
+            (np.ones(3), np.ones(2), np.ones((4, 2)), np.ones((3, 2))),
             "memory_size=3",
         ),
         (
             {"n_parameters": 1, "memory_size": 3},
-            (np.ones(2), np.ones((3, 2, 1)), np.ones((3, 2))),
+            (np.ones(3), np.ones(2), np.ones((3, 2, 1)), np.ones((3, 2))),
             "memory_size=3",
         ),
         (
             {"n_parameters": 1, "memory_size": 3},
-            (np.ones(2, dtype="float32"), np.ones((3, 2)), np.ones((3, 2))),
+            (np.ones(3), np.ones(2, dtype="float32"), np.ones((3, 2)), np.ones((3, 2))),
             "dtype",
         ),
+        (
+            {"n_parameters": 1, "memory_size": 3},
+            (np.ones(4), np.ones(2), np.ones((3, 2)), np.ones((3, 2))),
+            "one curvature per slot",
+        ),
     ],
-    ids=["no_parameters", "no_memory", "extra_tensor", "wrong_slots", "wrong_rank", "wrong_dtype"],
+    ids=[
+        "no_parameters",
+        "no_memory",
+        "extra_tensor",
+        "wrong_slots",
+        "wrong_rank",
+        "wrong_dtype",
+        "wrong_rho_length",
+    ],
 )
 def test_malformed_inputs_are_refused_at_build_time(props, tensors, message):
     with pytest.raises(ValueError, match=message):

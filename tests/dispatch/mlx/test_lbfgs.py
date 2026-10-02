@@ -29,7 +29,7 @@ def test_direction_matches_py(n_pairs, count):
     for _ in range(n_pairs):
         s = rng.normal(size=size).astype(floatX)
         pairs.append((s, rng.normal(size=size).astype(floatX) + 0.5 * s))
-    S, Y = ring_stacks(pairs, memory_size, count, shapes)
+    S, Y, rho = ring_stacks(pairs, memory_size, count, shapes)
     splits = np.cumsum([int(np.prod(shape)) for shape in shapes])[:-1]
     gradient_pieces = [
         piece.reshape(shape) for piece, shape in zip(np.split(gradient, splits), shapes)
@@ -39,7 +39,7 @@ def test_direction_matches_py(n_pairs, count):
     S_in = [pt.tensor(f"S{i}", shape=(memory_size, *shape)) for i, shape in enumerate(shapes)]
     Y_in = [pt.tensor(f"Y{i}", shape=(memory_size, *shape)) for i, shape in enumerate(shapes)]
     op = LBFGSDirection(n_parameters=2, memory_size=memory_size)
-    outputs = op(count, gamma, *gradients, *S_in, *Y_in, return_list=True)
+    outputs = op(count, gamma, rho, *gradients, *S_in, *Y_in, return_list=True)
 
     _, got = compare_mlx_and_py(
         [*gradients, *S_in, *Y_in],
@@ -61,7 +61,7 @@ def test_a_single_parameter_returns_one_array():
     S_in = pt.tensor("S", shape=(3, 5))
     Y_in = pt.tensor("Y", shape=(3, 5))
 
-    d = LBFGSDirection(n_parameters=1, memory_size=3)(0, 0.5, g_in, S_in, Y_in)
+    d = LBFGSDirection(n_parameters=1, memory_size=3)(0, 0.5, np.zeros(3), g_in, S_in, Y_in)
 
     compare_mlx_and_py([g_in, S_in, Y_in], d, [g, S, Y])
 
@@ -98,7 +98,7 @@ def test_parameters_of_different_dtypes_keep_their_own():
         for i, (shape, dtype) in enumerate(zip(shapes, dtypes))
     ]
     outputs = LBFGSDirection(n_parameters=2, memory_size=2)(
-        1, gamma, *gradients, *S_in, *Y_in, return_list=True
+        1, gamma, [1 / (y @ s), 0.0], *gradients, *S_in, *Y_in, return_list=True
     )
     direction = pytensor.function([*gradients, *S_in, *Y_in], outputs, mode=mlx_mode)
 

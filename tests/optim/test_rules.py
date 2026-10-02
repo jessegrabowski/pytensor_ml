@@ -679,12 +679,14 @@ def test_lbfgs_without_initial_scaling_starts_along_the_raw_gradient():
 def test_lbfgs_rejects_a_pair_with_negative_curvature():
     """A step whose gradient change opposes the parameter change would make the inverse-Hessian estimate
     indefinite, so the pair is left out of the memory, the ring index does not advance, and the next step
-    is the one an empty memory gives."""
+    is the one an empty memory gives. An accepted pair's curvature is stored beside it as ``1 / (y . s)``."""
     g = pt.vector("g")
     p = trainable(np.zeros(2), name="w")
     lr = 0.1
     updates = lbfgs_updates([g], [p], learning_rate=lr, memory_size=2)
     memory = next(key for key in updates if key.name == "w/lbfgs/value_differences")
+    gradient_memory = next(key for key in updates if key.name == "w/lbfgs/gradient_differences")
+    curvatures = next(key for key in updates if key.name == "lbfgs/curvatures")
     pairs_written = next(key for key in updates if key.name == "lbfgs/pairs_written")
     fn = function([g], p, updates=updates)
 
@@ -693,10 +695,13 @@ def test_lbfgs_rejects_a_pair_with_negative_curvature():
     fn(np.array([2.0, 0.0], dtype=floatX))  # p moved along -g and g grew: y . s < 0, rejected
     assert int(pairs_written.get_value()) == 0
     np.testing.assert_array_equal(memory.get_value(), 0.0)
+    np.testing.assert_array_equal(curvatures.get_value(), 0.0)
     np.testing.assert_allclose(p.get_value(), before - lr * 0.5 * np.array([2.0, 0.0]), rtol=RTOL)
     fn(np.array([0.5, 0.0], dtype=floatX))  # g shrank along the move: y . s > 0, accepted
     assert int(pairs_written.get_value()) == 1
     assert np.any(memory.get_value()[0] != 0.0)
+    s, y = memory.get_value()[0], gradient_memory.get_value()[0]
+    np.testing.assert_allclose(curvatures.get_value(), [1.0 / (y @ s), 0.0], rtol=RTOL)
 
 
 def test_lbfgs_rejects_a_zero_memory_size():
