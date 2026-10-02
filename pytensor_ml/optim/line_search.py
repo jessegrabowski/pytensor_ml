@@ -1,6 +1,6 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import NamedTuple, Protocol, cast
+from typing import NamedTuple, Protocol
 
 import numpy as np
 import pytensor
@@ -474,7 +474,7 @@ def search_along(
     loss : TensorVariable
         Scalar loss of the parameters. It has to be deterministic: a loss that draws random numbers would
         draw again at every trial, and the trials would not be measuring one function.
-    parameters : sequence of Variable
+    parameters : sequence of TensorVariable
         The variables the trials move.
     gradients : sequence of TensorVariable
         The gradient of ``loss`` with respect to each parameter, at the current point.
@@ -518,10 +518,11 @@ def search_along(
         parameter: parameter + trial_step.astype(parameter.dtype) * direction
         for parameter, direction in zip(parameters, directions)
     }
-    trial_value, *trial_gradients = cast(
-        list[TensorVariable], graph_replace([loss, *gradients], moved, strict=True)
-    )
-    trial_outputs = [trial_value, flat_dot(trial_gradients, directions).astype(dtype)]
+    trial_value, *trial_gradients = graph_replace([loss, *gradients], moved, strict=True)
+    trial_outputs = [
+        trial_value,
+        flat_dot(trial_gradients, directions).astype(dtype),  # type: ignore[arg-type]
+    ]
     moving = [trial_step, *parameters, *directions]
     others = [
         variable
