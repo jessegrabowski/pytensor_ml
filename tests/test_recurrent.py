@@ -1210,6 +1210,26 @@ def test_a_mask_keeps_padding_out_of_the_gradient(rng):
         )
 
 
+def test_non_finite_padding_leaves_the_gradient_finite(rng):
+    """Padding is only a placeholder, so a batch padded with NaN has to train exactly like one padded
+    with zeros. The masked step's discarded branch still meets the padding on the backward pass, where
+    a zero cotangent times the step's derivative at NaN is NaN."""
+    X = pt.tensor("X", shape=(None, None, 4))
+    mask = pt.tensor("mask", shape=(None, None), dtype=bool)
+    layer = RNN("rnn", n_in=4, n_hidden=3, reverse=True)
+    draw_parameters(layer, rng)
+    parameters = [layer.cell.W_ih, layer.cell.W_hh, layer.cell.b]
+    gradients = pytensor.function([X, mask], pt.grad(layer(X, mask=mask).sum(), parameters))
+
+    zero_padded, mask_np = pad_to([rng.normal(size=(3, 4)).astype(floatX)], padded_length=6)
+    nan_padded = np.where(mask_np[..., None], zero_padded, np.nan).astype(floatX)
+
+    for nan_gradient, zero_gradient in zip(
+        gradients(nan_padded, mask_np), gradients(zero_padded, mask_np)
+    ):
+        np.testing.assert_array_equal(nan_gradient, zero_gradient)
+
+
 def test_a_mask_may_skip_a_step_in_the_middle(rng):
     """A mask says which steps count, not how many, so it can drop one from the middle -- which a
     per-example length cannot express. The recurrence carries on as if that step were not there."""
