@@ -66,7 +66,7 @@ def trainable(value, name=None, **kwargs):
         nadam(learning_rate=1e-2),
         adamax(learning_rate=1e-2),
         rprop(learning_rate=1e-2),
-        lbfgs(learning_rate=1e-2),
+        lbfgs(),
     ],
     ids=[
         "sgd",
