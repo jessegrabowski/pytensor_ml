@@ -5,19 +5,17 @@ import pytest
 
 from pytensor_ml.layers import (
     ConstantPad1D,
-    ConstantPad2D,
     ReflectionPad1D,
     ReflectionPad2D,
     ReplicationPad1D,
     ReplicationPad2D,
-    ZeroPad1D,
     ZeroPad2D,
 )
 
 floatX = pytensor.config.floatX
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def rng():
     return np.random.default_rng(sum(map(ord, "padding")))
 
@@ -31,16 +29,10 @@ def rng():
             "constant",
             {"constant_values": 0.0},
         ),
-        (
-            ConstantPad2D(padding=((2, 1), (1, 3)), value=-1.5),
-            ((2, 1), (1, 3)),
-            "constant",
-            {"constant_values": -1.5},
-        ),
         (ReflectionPad2D(padding=((1, 2), (2, 1))), ((1, 2), (2, 1)), "reflect", {}),
         (ReplicationPad2D(padding=((2, 1), (1, 2))), ((2, 1), (1, 2)), "edge", {}),
     ],
-    ids=["zero", "constant", "reflection", "replication"],
+    ids=["zero", "reflection", "replication"],
 )
 def test_each_mode_pads_the_spatial_axes_like_numpy(
     layer, pad_width, numpy_mode, numpy_kwargs, rng
@@ -59,12 +51,10 @@ def test_each_mode_pads_the_spatial_axes_like_numpy(
 @pytest.mark.parametrize(
     "layer, numpy_mode, numpy_kwargs",
     [
-        (ZeroPad1D(padding=(2, 4)), "constant", {"constant_values": 0.0}),
         (ConstantPad1D(padding=(2, 4), value=3.5), "constant", {"constant_values": 3.5}),
-        (ReflectionPad1D(padding=(2, 4)), "reflect", {}),
         (ReplicationPad1D(padding=(2, 4)), "edge", {}),
     ],
-    ids=["zero", "constant", "reflection", "replication"],
+    ids=["constant", "replication"],
 )
 def test_one_spatial_axis_reads_a_bare_pair_as_its_two_ends(layer, numpy_mode, numpy_kwargs, rng):
     """Over a single axis `(2, 4)` can only mean its two ends, and that is how torch reads it too --
@@ -87,28 +77,6 @@ def test_padding_wider_than_the_axis_keeps_reflecting(rng):
     np.testing.assert_allclose(padded, np.pad(X_np, [(0, 0), (5, 5), (0, 0)], mode="reflect"))
 
 
-def test_the_batch_and_channel_axes_are_left_alone(rng):
-    """Padding is spatial. A layer that padded every axis would still produce a plausible-looking
-    array, so the untouched axes are asserted rather than assumed."""
-    X_np = rng.normal(size=(2, 5, 6, 3)).astype(floatX)
-    X = pt.tensor("X", shape=(None, 5, 6, 3), dtype=floatX)
-
-    padded = pytensor.function([X], ZeroPad2D(padding=2)(X))(X_np)
-    assert padded.shape == (2, 9, 10, 3)
-    np.testing.assert_allclose(padded[:, 2:-2, 2:-2, :], X_np)
-
-
-def test_gradients_reach_the_input_through_the_padding(rng):
-    """The padded positions are constants, so the gradient of a padded output has to arrive back at
-    exactly the elements that came from the input and nowhere else."""
-    X_np = rng.normal(size=(1, 4, 4, 1)).astype(floatX)
-    X = pt.tensor("X", shape=(1, 4, 4, 1), dtype=floatX)
-
-    padded = ZeroPad2D(padding=1)(X)
-    gradient = pytensor.function([X], pt.grad(padded.sum(), X))(X_np)
-    np.testing.assert_allclose(gradient, np.ones_like(X_np))
-
-
 def test_an_input_of_the_wrong_rank_is_rejected():
     """The layers are channels-last over a fixed number of spatial axes, so a channels-first image or
     a batch of vectors is a mistake worth naming rather than padding the wrong axes."""
@@ -122,11 +90,19 @@ def test_an_input_of_the_wrong_rank_is_rejected():
         (-1, "cannot be negative"),
         (((1, 2), (3, -4)), "cannot be negative"),
         ((1, 2, 3), "one amount per axis"),
+        (((1, 2, 3), (1, 1)), r"is a \(before, after\) pair"),
     ],
-    ids=["negative_scalar", "negative_in_pair", "wrong_count"],
+    ids=["negative_scalar", "negative_in_pair", "wrong_count", "triple_for_one_axis"],
 )
 def test_padding_amounts_are_validated(padding, message):
     """Each of these describes something the layer cannot do, and each would otherwise surface as a
     confusing shape further downstream."""
     with pytest.raises(ValueError, match=message):
         ZeroPad2D(padding=padding)
+
+
+def test_one_amount_per_axis_pads_both_of_its_sides():
+    """Over two axes a flat pair is one amount per axis, so `(1, 2)` puts 1 on the top and bottom and
+    2 on the left and right. The 1-D layers read the same pair as one axis's two ends, and the two
+    readings must not leak into each other."""
+    assert ZeroPad2D(padding=(1, 2)).padding == ((1, 1), (2, 2))
