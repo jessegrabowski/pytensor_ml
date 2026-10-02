@@ -45,7 +45,8 @@ class LBFGSDirection(SymbolicOp):
 
     Examples
     --------
-    Compile the direction for one vector parameter and a memory of four slots, with one pair written:
+    Compile the direction for one vector parameter and a memory of four slots, with one pair written. The
+    slot count of ``rho`` and the stacks has to be static:
 
     .. code-block:: python
 
@@ -55,9 +56,9 @@ class LBFGSDirection(SymbolicOp):
         from pytensor_ml.optim.lbfgs import LBFGSDirection
 
         g = pt.vector("g")
-        rho = pt.vector("rho")
-        S = pt.matrix("S")
-        Y = pt.matrix("Y")
+        rho = pt.tensor("rho", shape=(4,))
+        S = pt.tensor("S", shape=(4, None))
+        Y = pt.tensor("Y", shape=(4, None))
         d = LBFGSDirection(n_parameters=1, memory_size=4)(1, 1.0, rho, g, S, Y)
         direction = pytensor.function([rho, g, S, Y], d)
 
@@ -98,9 +99,12 @@ class LBFGSDirection(SymbolicOp):
                 f"LBFGSDirection with n_parameters={n} takes {3 * n} tensors after count, gamma and rho, "
                 f"a gradient and two memory stacks per parameter, but got {len(tensors)}."
             )
-        if rho.type.ndim != 1 or rho.type.shape[0] not in (None, m):
+        # The recursion walks exactly memory_size slots, so a slot count known only at runtime could
+        # silently drop rows or index past the end.
+        if rho.type.ndim != 1 or rho.type.shape[0] != m:
             raise ValueError(
-                f"rho must be a vector of one curvature per slot (memory_size={m}), but got {rho.type}."
+                f"rho must be a vector of one curvature per slot, with a static length of "
+                f"memory_size={m}, but got {rho.type}."
             )
         gradients = tensors[:n]
         S = tensors[n : 2 * n]
@@ -155,17 +159,17 @@ def _scalar_at(value: Variable | float | int, dtype: str) -> TensorVariable:
 def _require_stack_of(
     stack: TensorVariable, gradient: TensorVariable, memory_size: int, index: int
 ) -> None:
-    """Raise unless ``stack`` is ``memory_size`` slots of ``gradient``'s shape and dtype."""
+    """Raise unless ``stack`` is a static ``memory_size`` slots of ``gradient``'s shape and dtype."""
     slots = stack.type.shape[0] if stack.type.ndim else None
     if (
         stack.type.ndim != gradient.type.ndim + 1
         or stack.type.dtype != gradient.type.dtype
-        or (slots is not None and slots != memory_size)
+        or slots != memory_size
     ):
         raise ValueError(
             f"The memory stacks of parameter {index} must be shaped (memory_size={memory_size}, "
-            f"*gradient.shape) at the gradient's dtype, but got {stack.type} for a gradient of type "
-            f"{gradient.type}."
+            f"*gradient.shape) at the gradient's dtype, with the slot count static, but got "
+            f"{stack.type} for a gradient of type {gradient.type}."
         )
 
 

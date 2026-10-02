@@ -64,8 +64,8 @@ def test_parameters_of_different_dtypes_keep_their_own():
 
 def test_a_scalar_parameter_has_vector_stacks():
     g = pt.scalar("g", dtype=floatX)
-    S = pt.vector("S", dtype=floatX)
-    Y = pt.vector("Y", dtype=floatX)
+    S = pt.tensor("S", shape=(3,), dtype=floatX)
+    Y = pt.tensor("Y", shape=(3,), dtype=floatX)
 
     d = LBFGSDirection(n_parameters=1, memory_size=3)(1, 1.0, [0.0, 0.0, 1 / (1.5 * 3.0)], g, S, Y)
 
@@ -141,6 +141,11 @@ def test_a_zero_curvature_retires_its_slot_whatever_the_stacks_hold():
             (np.ones(4), np.ones(2), np.ones((3, 2)), np.ones((3, 2))),
             "one curvature per slot",
         ),
+        (
+            {"n_parameters": 1, "memory_size": 3},
+            (np.ones(3), np.ones(2), pt.tensor("S", shape=(None, 2)), np.ones((3, 2))),
+            "slot count static",
+        ),
     ],
     ids=[
         "no_parameters",
@@ -150,6 +155,7 @@ def test_a_zero_curvature_retires_its_slot_whatever_the_stacks_hold():
         "wrong_rank",
         "wrong_dtype",
         "wrong_rho_length",
+        "dynamic_slots",
     ],
 )
 def test_malformed_inputs_are_refused_at_build_time(props, tensors, message):
