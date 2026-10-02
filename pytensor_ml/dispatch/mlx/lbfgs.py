@@ -40,12 +40,16 @@ def mlx_funcify_LBFGSDirection(op, node=None, **kwargs):
         alphas = [None] * m
         for position in reversed(range(m)):
             alphas[position] = curvatures[position] * dot(s_rows[position], vector)
-            vector = [v - alphas[position] * y_p for v, y_p in zip(vector, y_rows[position])]
-        vector = [gamma * v for v in vector]
+            vector = [
+                v - alphas[position].astype(v.dtype) * y_p
+                for v, y_p in zip(vector, y_rows[position])
+            ]
+        vector = [gamma.astype(v.dtype) * v for v in vector]
         for position in range(m):
             beta = curvatures[position] * dot(y_rows[position], vector)
             vector = [
-                v + (alphas[position] - beta) * s_p for v, s_p in zip(vector, s_rows[position])
+                v + (alphas[position] - beta).astype(v.dtype) * s_p
+                for v, s_p in zip(vector, s_rows[position])
             ]
         return vector[0] if n == 1 else tuple(vector)
 

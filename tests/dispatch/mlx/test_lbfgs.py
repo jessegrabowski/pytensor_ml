@@ -12,7 +12,7 @@ from pytensor_ml.optim import lbfgs_updates
 from pytensor_ml.optim.lbfgs import LBFGSDirection
 from pytensor_ml.params import trainable
 from pytensor_ml.pytensorf import function
-from tests.dispatch.mlx.test_basic import compare_mlx_and_py
+from tests.dispatch.mlx.test_basic import compare_mlx_and_py, mlx_mode
 from tests.optim.test_lbfgs import dense_inverse_hessian, ring_stacks
 
 floatX = pytensor.config.floatX
@@ -64,6 +64,52 @@ def test_a_single_parameter_returns_one_array():
     d = LBFGSDirection(n_parameters=1, memory_size=3)(0, 0.5, g_in, S_in, Y_in)
 
     compare_mlx_and_py([g_in, S_in, Y_in], d, [g, S, Y])
+
+
+def test_parameters_of_different_dtypes_keep_their_own():
+    # The cross-parameter dot products come back at the widest dtype, and mlx promotes every vector they
+    # scale, so the narrower parameter's direction has to be cast back to the dtype its output declares.
+    rng = np.random.default_rng(sum(map(ord, "mixed dtypes")))
+    dtypes = ["float32", "float16"]
+    shapes = [(3,), (2,)]
+    size = sum(int(np.prod(shape)) for shape in shapes)
+    gamma = 0.5
+    gradient = rng.normal(size=size)
+    s = rng.normal(size=size)
+    y = s + rng.normal(scale=0.1, size=size)
+    splits = np.cumsum([int(np.prod(shape)) for shape in shapes])[:-1]
+
+    def per_parameter(flat):
+        return [piece.astype(dtype) for piece, dtype in zip(np.split(flat, splits), dtypes)]
+
+    def one_pair_stack(flat):
+        return [np.stack([piece, np.zeros_like(piece)]) for piece in per_parameter(flat)]
+
+    gradients = [
+        pt.tensor(f"g{i}", shape=shape, dtype=dtype)
+        for i, (shape, dtype) in enumerate(zip(shapes, dtypes))
+    ]
+    S_in = [
+        pt.tensor(f"S{i}", shape=(2, *shape), dtype=dtype)
+        for i, (shape, dtype) in enumerate(zip(shapes, dtypes))
+    ]
+    Y_in = [
+        pt.tensor(f"Y{i}", shape=(2, *shape), dtype=dtype)
+        for i, (shape, dtype) in enumerate(zip(shapes, dtypes))
+    ]
+    outputs = LBFGSDirection(n_parameters=2, memory_size=2)(
+        1, gamma, *gradients, *S_in, *Y_in, return_list=True
+    )
+    direction = pytensor.function([*gradients, *S_in, *Y_in], outputs, mode=mlx_mode)
+
+    got = [
+        np.asarray(d)
+        for d in direction(*per_parameter(gradient), *one_pair_stack(s), *one_pair_stack(y))
+    ]
+
+    assert [d.dtype for d in got] == dtypes
+    want = dense_inverse_hessian(gamma, [(s, y)], size) @ gradient
+    np.testing.assert_allclose(np.concatenate(got), want, rtol=1e-2)
 
 
 @pytest.mark.parametrize("use_compile", [True, False], ids=["compiled", "eager"])
