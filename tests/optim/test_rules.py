@@ -736,6 +736,27 @@ def test_lbfgs_stays_finite_after_it_converges():
     np.testing.assert_array_equal(p.get_value(), 0.0)
 
 
+def test_lbfgs_parameters_of_different_dtypes_reach_the_minimum():
+    # The curvatures and the identity scale are cross-parameter dots, so they are kept at the widest
+    # parameter dtype while each parameter keeps its own.
+    u = params.trainable(np.array([5.0], dtype="float64"), name="u")
+    v = params.trainable(np.array([-3.0], dtype="float32"), name="v")
+    loss = 0.5 * ((u - 1.0) ** 2).sum() + 2.0 * ((v + 2.0) ** 2).sum()
+    updates = lbfgs_updates(loss, [u, v], memory_size=2)
+    curvatures = next(key for key in updates if key.name == "lbfgs/curvatures")
+    step = function([], loss, updates=updates)
+
+    for _ in range(12):
+        step()
+
+    assert (u.get_value().dtype, v.get_value().dtype, curvatures.dtype) == (
+        "float64",
+        "float32",
+        "float64",
+    )
+    np.testing.assert_allclose([u.get_value()[0], v.get_value()[0]], [1.0, -2.0], rtol=1e-5)
+
+
 def test_lbfgs_rejects_a_zero_memory_size():
     p = trainable(np.zeros(2), name="w")
     with pytest.raises(ValueError, match="memory_size must be at least 1"):
