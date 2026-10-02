@@ -1031,19 +1031,23 @@ def lbfgs_updates(
     )
     new_pairs_written = pairs_written + accept.astype(pairs_written.dtype)
 
+    updates: Updates = Steps(incoming)
     if scale_init_precond:
-        has_pair = new_pairs_written > 0
-        newest = ((new_pairs_written - 1) % memory_size)[None]
-        newest_s = [memory[newest] for memory in new_value_memory]
-        newest_y = [memory[newest] for memory in new_gradient_memory]
-        newest_curvature = flat_dot(newest_s, newest_y)
-        newest_change = pt.switch(has_pair, flat_dot(newest_y, newest_y), 1.0)
+        # The newest admitted pair's s . y / y . y, carried from the step that admitted it, since a
+        # rejected step leaves the newest pair in memory unchanged.
+        newest_pair_scale = scalar_state(f"{namespace}/identity_scale", dtype=curvatures.dtype)
+        new_newest_pair_scale = pt.switch(
+            accept,
+            curvature / pt.switch(accept, gradient_change, 1.0),
+            newest_pair_scale,
+        ).astype(newest_pair_scale.dtype)
         gradient_norm = pt.sqrt(flat_dot(gradients, gradients))
         identity_scale = pt.switch(
-            has_pair,
-            newest_curvature / newest_change,
+            new_pairs_written > 0,
+            new_newest_pair_scale,
             pt.minimum(1.0, 1.0 / pt.switch(gradient_norm > 0, gradient_norm, 1.0)),
         )
+        updates[newest_pair_scale] = new_newest_pair_scale
     else:
         identity_scale = 1.0
 
@@ -1057,7 +1061,6 @@ def lbfgs_updates(
         return_list=True,
     )
 
-    updates: Updates = Steps(incoming)
     updates[step_count] = step_count + 1
     updates[pairs_written] = new_pairs_written
     updates[curvatures] = new_curvatures
