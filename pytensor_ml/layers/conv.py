@@ -58,45 +58,6 @@ def _window_span(extent: int, spacing: int) -> int:
     return spacing * (extent - 1) + 1
 
 
-def _window_indices(
-    X: TensorVariable, kernel_size: Sequence[int], stride: Sequence[int], dilation: Sequence[int]
-) -> list[TensorVariable]:
-    """One advanced index per spatial axis, carrying that axis's windows and its taps.
-
-    Each broadcasts against the others, so indexing with all of them at once gives windows-then-taps in
-    order. Shared by the gather's reference graph and by the scatter that reverses it.
-    """
-    n_spatial = len(kernel_size)
-    indices = []
-    for axis, (extent, step, spacing) in enumerate(zip(kernel_size, stride, dilation)):
-        span = _window_span(extent, spacing)
-        starts = pt.arange(0, X.shape[1 + axis] - span + 1, step)
-        window = starts[:, None] + pt.arange(extent)[None, :] * spacing
-
-        pattern: list[int | str] = ["x"] * (2 * n_spatial)
-        pattern[axis] = 0
-        pattern[n_spatial + axis] = 1
-        indices.append(window.dimshuffle(*pattern))
-    return indices
-
-
-def _scatter_patches(
-    cotangent: TensorVariable,
-    X: TensorVariable,
-    kernel_size: Sequence[int],
-    stride: Sequence[int],
-    dilation: Sequence[int],
-) -> TensorVariable:
-    """Add each window's cotangent back at the position it was gathered from.
-
-    Windows overlap, so a position reached by several of them accumulates all of their contributions --
-    which is why this is a scatter-add rather than an assignment.
-    """
-    indices = _window_indices(X, kernel_size, stride, dilation)
-    zeros = pt.zeros(X.shape, dtype=cotangent.dtype)
-    return pt.inc_subtensor(zeros[(slice(None), *indices, slice(None))], cotangent)
-
-
 class Im2Col(Op):
     """
     Gather every window a kernel visits, as one node a backend can put a real copy behind.
@@ -282,36 +243,6 @@ class Col2Im(Op):
         (cotangent,) = cotangents
         gathered = Im2Col(self.kernel_size, self.stride, self.dilation)(cotangent)
         return [gathered, *(disconnected_type() for _ in self.kernel_size)]
-
-
-def _extract_patches(
-    X: TensorVariable,
-    kernel_size: Sequence[int],
-    stride: Sequence[int],
-    dilation: Sequence[int],
-) -> TensorVariable:
-    """
-    Gather every window a kernel visits, for an input with any number of spatial axes.
-
-    Parameters
-    ----------
-    X : TensorVariable
-        Input of shape ``(batch, *spatial, channels)``.
-    kernel_size : sequence of int
-        Window extent along each spatial axis. Its length is the number of spatial axes.
-    stride : sequence of int
-        Step between windows along each spatial axis.
-    dilation : sequence of int
-        Spacing between the taps of one window along each spatial axis.
-
-    Returns
-    -------
-    patches : TensorVariable
-        Shape ``(batch, *out_spatial, *kernel_size, channels)``, where ``out_spatial`` counts the
-        windows that fit.
-    """
-    indices = _window_indices(X, kernel_size, stride, dilation)
-    return X[(slice(None), *indices, slice(None))]
 
 
 class ConvLayer(UnaryLayerOp):
