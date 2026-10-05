@@ -1,5 +1,7 @@
 import inspect
 
+from itertools import pairwise
+
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
@@ -20,6 +22,8 @@ from pytensor_ml.optim import (
     adamax_updates,
     adamw,
     adamw_updates,
+    chain,
+    clip_by_global_norm,
     compile_train,
     cosine_schedule,
     lbfgs,
@@ -34,6 +38,7 @@ from pytensor_ml.optim import (
     sgd_updates,
 )
 from pytensor_ml.optim import alias as alias_module
+from pytensor_ml.optim.line_search import zoom_line_search
 from pytensor_ml.pytensorf import function
 from tests.optim.lbfgs_reference import dense_inverse_hessian
 
@@ -723,13 +728,17 @@ def test_lbfgs_rejects_a_pair_whose_curvature_is_positive_but_negligible():
     assert int(pairs_written.get_value()) == 0
 
 
-def test_lbfgs_stays_finite_after_it_converges():
+@pytest.mark.parametrize(
+    "line_search", [None, zoom_line_search()], ids=["fixed_step", "line_search"]
+)
+def test_lbfgs_stays_finite_after_it_converges(line_search):
     """Past the minimum the gradient changes underflow, so ``y . y`` reaches zero while ``y . s`` is
     still a positive subnormal; a pair admitted then stores an infinite ``1 / (y . s)`` and the next
-    step is NaN. float32 at any floatX, where the underflow arrives within a few steps."""
+    step is NaN. float32 at any floatX, where the underflow arrives within a few steps. A search there
+    starts from a zero slope and accepts its first trial."""
     p = params.trainable(np.ones(2, dtype="float32"), name="w")
     loss = (p**2).sum()
-    step = function([], loss, updates=lbfgs_updates(loss, [p]))
+    step = function([], loss, updates=lbfgs_updates(loss, [p], line_search=line_search))
 
     for _ in range(10):
         step()
@@ -758,14 +767,17 @@ def test_lbfgs_parameters_of_different_dtypes_reach_the_minimum():
     np.testing.assert_allclose([u.get_value()[0], v.get_value()[0]], [1.0, -2.0], rtol=1e-5)
 
 
-def test_lbfgs_resumes_its_trajectory_from_a_checkpoint(tmp_path):
+@pytest.mark.parametrize(
+    "line_search", [None, zoom_line_search()], ids=["fixed_step", "line_search"]
+)
+def test_lbfgs_resumes_its_trajectory_from_a_checkpoint(tmp_path, line_search):
     """Every piece of the rule's state is named and saved, so a run restored mid-way retraces the
     steps it took the first time; a ring index or curvature left behind would desynchronize the memory
     from its order."""
     A = np.array([[3.0, 0.5], [0.5, 1.0]])
     p = trainable(np.array([5.0, -3.0]), name="w")
     loss = 0.5 * p @ pt.constant(A, dtype=floatX) @ p
-    updates = lbfgs_updates(loss, [p], learning_rate=0.5, memory_size=2)
+    updates = lbfgs_updates(loss, [p], learning_rate=0.5, memory_size=2, line_search=line_search)
     state = list(updates)
     step = function([], loss, updates=updates)
     for _ in range(3):
@@ -778,6 +790,88 @@ def test_lbfgs_resumes_its_trajectory_from_a_checkpoint(tmp_path):
     second = [float(step()) for _ in range(4)]
 
     np.testing.assert_array_equal(second, first)
+
+
+# optax.lbfgs() on Rosenbrock from (-1.2, 1), whose default search is the same zoom with a first trial of
+# one: the loss before each of its first 12 steps.
+OPTAX_LBFGS_ROSENBROCK = [
+    24.199999999999992,
+    11.298089684996773,
+    4.400456781386164,
+    4.113928620500794,
+    4.104804048918484,
+    4.100624910419455,
+    4.060149693984276,
+    3.9626941083836766,
+    2.6301041311456412,
+    2.6234786168036246,
+    2.558343445108792,
+    2.2005231515714794,
+]
+
+
+def test_lbfgs_with_a_line_search_follows_optax_to_the_minimum():
+    """At the default rate the first trial is the full quasi-Newton step, and the search accepts or
+    shortens it as optax's does, so the trajectory is optax's down to the minimum."""
+    p = trainable(np.array([-1.2, 1.0]), name="x")
+    loss = pt.sum(100.0 * (p[1:] - p[:-1] ** 2) ** 2 + (1 - p[:-1]) ** 2)
+    step = compile_train(loss, lbfgs(line_search=zoom_line_search()), inputs=[])
+
+    losses = [float(step()) for _ in range(37)]
+
+    np.testing.assert_allclose(losses[:12], OPTAX_LBFGS_ROSENBROCK, rtol=1e-10)
+    assert losses[-1] < 1e-20
+
+
+def test_lbfgs_line_search_accepts_the_first_trial_on_a_quadratic():
+    """On a quadratic every step the rule proposes, the capped first gradient step included, satisfies
+    both Wolfe conditions, so every search stops after one evaluation and none fails."""
+    A = np.array([[3.0, 0.5], [0.5, 1.0]])
+    p = trainable(np.array([5.0, -3.0]), name="w")
+    loss = 0.5 * p @ pt.constant(A, dtype=floatX) @ p
+    updates = lbfgs_updates(loss, [p], line_search=zoom_line_search())
+    state = {key.name: key for key in updates}
+    step = function([], loss, updates=updates)
+
+    evaluations, step_sizes = [], []
+    for _ in range(6):
+        step()
+        evaluations.append(int(state["lbfgs/line_search/evaluations"].get_value()))
+        step_sizes.append(float(state["lbfgs/line_search/step_size"].get_value()))
+
+    assert evaluations == [1] * 6
+    assert step_sizes == [1.0] * 6
+    assert int(state["lbfgs/line_search/failures"].get_value()) == 0
+
+
+def test_lbfgs_line_search_shortens_a_step_the_rate_overshoots():
+    """At ten times the natural rate the first trial jumps far past the minimum along the direction, so
+    the search shortens it and the loss still falls at every step."""
+    A = np.array([[3.0, 0.5], [0.5, 1.0]])
+    p = trainable(np.array([5.0, -3.0]), name="w")
+    loss = 0.5 * p @ pt.constant(A, dtype=floatX) @ p
+    updates = lbfgs_updates(loss, [p], learning_rate=10.0, line_search=zoom_line_search())
+    state = {key.name: key for key in updates}
+    step = function([], loss, updates=updates)
+
+    # Three steps reach the minimum exactly; past it there is nothing left to shorten
+    losses, step_sizes = [], []
+    for _ in range(3):
+        losses.append(float(step()))
+        step_sizes.append(float(state["lbfgs/line_search/step_size"].get_value()))
+
+    assert all(size < 1.0 for size in step_sizes)
+    assert all(later < earlier for earlier, later in pairwise(losses))
+
+
+def test_lbfgs_line_search_refuses_input_other_than_the_loss():
+    p = trainable(np.zeros(2), name="w")
+    loss = ((p - 1.0) ** 2).sum()
+
+    with pytest.raises(ValueError, match="needs the loss graph"):
+        lbfgs_updates([2 * (p - 1.0)], [p], line_search=zoom_line_search())
+    with pytest.raises(ValueError, match="needs the loss graph"):
+        chain(clip_by_global_norm(1.0), lbfgs(line_search=zoom_line_search()))(loss, [p])
 
 
 def test_lbfgs_rejects_a_zero_memory_size():

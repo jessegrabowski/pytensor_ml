@@ -24,6 +24,7 @@ from pytensor_ml.optim.base import (
     to_floatx,
 )
 from pytensor_ml.optim.lbfgs import LBFGSDirection, flat_dot
+from pytensor_ml.optim.line_search import LineSearch, search_along
 from pytensor_ml.params import step_counter
 
 
@@ -913,6 +914,7 @@ def lbfgs_updates(
     learning_rate: LearningRate = 1.0,
     memory_size: int = 10,
     scale_init_precond: bool = True,
+    line_search: LineSearch | None = None,
     namespace: str = "lbfgs",
 ) -> Updates:
     r"""
@@ -957,6 +959,15 @@ def lbfgs_updates(
     scale_init_precond : bool
         Start the recursion from :math:`\gamma I` as above. When False it starts from the identity, and
         the first step is the raw gradient. Default True.
+    line_search : LineSearch, optional
+        Search for a step size along each step, with ``learning_rate`` as the first trial, for example
+        :func:`~pytensor_ml.optim.zoom_line_search`. The search evaluates the loss, so the first argument
+        has to be the loss itself. Its step size multiplies the step already scaled by ``learning_rate``,
+        so a bound such as ``max_learning_rate`` caps that multiplier. The rule records the last
+        multiplier in ``{namespace}/line_search/step_size``, the last search's trial count in
+        ``{namespace}/line_search/evaluations``, and the number of searches that have failed so far in
+        ``{namespace}/line_search/failures``. Default None, which takes every step at
+        ``learning_rate``.
     namespace : str
         Prefix for every state slot this rule allocates, so two rules in one graph keep separate state
         rather than reusing each other's. Default is the rule's own name.
@@ -964,7 +975,8 @@ def lbfgs_updates(
     Returns
     -------
     updates : Updates
-        Mapping from each parameter and its memory buffers to their next values.
+        Mapping from each parameter, its memory buffers and, with a search, the search's records to
+        their next values.
 
     Examples
     --------
@@ -989,6 +1001,15 @@ def lbfgs_updates(
     """
     if memory_size < 1:
         raise ValueError(f"memory_size must be at least 1, got {memory_size}.")
+    loss = (
+        loss_gradients_or_updates if isinstance(loss_gradients_or_updates, TensorVariable) else None
+    )
+    if line_search is not None and loss is None:
+        raise ValueError(
+            f"{namespace} searches along its step by evaluating the loss, so with a line search it needs "
+            f"the loss graph rather than gradients or an updates dict. It therefore has to come first in "
+            f"a chain, where the loss still reaches it."
+        )
 
     incoming, gradients = gradients_to_descend(loss_gradients_or_updates, parameters, namespace)
     step_count = step_counter(f"{namespace}/step_count")
@@ -1086,6 +1107,25 @@ def lbfgs_updates(
         updates[previous_gradients[index]] = gradients[index]
         updates[value_memory[index]] = new_value_memory[index]
         updates[gradient_memory[index]] = new_gradient_memory[index]
-        updates[parameter] = parameter - learning_rate * directions[index]
+
+    steps = [
+        (-learning_rate * direction).astype(parameter.dtype)
+        for parameter, direction in zip(parameters, directions)
+    ]
+    if line_search is None or loss is None:
+        for parameter, step in zip(parameters, steps):
+            updates[parameter] = parameter + step
+        return updates
+
+    search = search_along(loss, parameters, gradients, steps, line_search)
+    for parameter, step in zip(parameters, steps):
+        updates[parameter] = parameter + search.step_size.astype(parameter.dtype) * step
+
+    step_size = scalar_state(f"{namespace}/line_search/step_size", fill_value=1.0)
+    evaluations = scalar_state(f"{namespace}/line_search/evaluations", dtype="int64")
+    failures = scalar_state(f"{namespace}/line_search/failures", dtype="int64")
+    updates[step_size] = search.step_size.astype(step_size.dtype)
+    updates[evaluations] = search.evaluations.astype(evaluations.dtype)
+    updates[failures] = failures + search.failed.astype(failures.dtype)
 
     return updates

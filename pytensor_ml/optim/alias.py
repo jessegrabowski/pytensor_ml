@@ -7,6 +7,7 @@ from pytensor_ml.optim.base import (
     Transform,
     Updates,
 )
+from pytensor_ml.optim.line_search import LineSearch
 from pytensor_ml.optim.rules import (
     _require_numeric_learning_rate,
     adadelta_updates,
@@ -363,6 +364,7 @@ def lbfgs(
     memory_size: int = 10,
     scale_init_precond: bool = True,
     *,
+    line_search: LineSearch | None = None,
     namespace: str = "lbfgs",
 ) -> Transform:
     """
@@ -402,6 +404,7 @@ def lbfgs(
             learning_rate=learning_rate,
             memory_size=memory_size,
             scale_init_precond=scale_init_precond,
+            line_search=line_search,
             namespace=namespace,
         )
 
