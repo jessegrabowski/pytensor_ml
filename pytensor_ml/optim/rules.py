@@ -930,18 +930,20 @@ def lbfgs_updates(
     step is :math:`p \leftarrow p - \eta H g`.
 
     The direction is well scaled once the memory holds a pair, so :math:`\eta = 1` is the natural rate.
-    The rule takes every step at that rate: there is no line search yet (pymc-devs/pytensor-ml#58), so
-    the rate is the only safeguard against a bad direction. Consecutive gradients have to be measured on
-    the same objective for their difference to be curvature, so the rule assumes a deterministic,
-    full-batch loss.
+    Given a ``line_search``, the rule searches along :math:`-\eta H g` for a step size :math:`t` and
+    moves to :math:`p - t \eta H g`, so ``learning_rate`` is the first trial step. Without one it takes
+    every step at the rate, which is then the only safeguard against a bad direction. Consecutive
+    gradients have to be measured on the same objective for their difference to be curvature, and a
+    search compares the loss at several points, so the rule assumes a deterministic, full-batch loss.
 
     Three uses break that assumption. A gradient transform ahead of the rule in a chain, such as
     :func:`~pytensor_ml.optim.clipping.clip_by_global_norm`, hands it gradients whose differences are not
-    curvature, and the rule can diverge. Clip after the rule instead: the parameter differences are read
-    off the parameters, so a clipped step still forms a valid pair. Wrapping the rule in
-    :func:`~pytensor_ml.optim.guards.skip_if` does not rescue a bad step either, because the loss is
-    deterministic and a skipped step is recomputed unchanged on the next call until the guard raises. A
-    step that a guard would skip calls for a smaller rate. Finally, a parameter written between steps,
+    curvature, and the rule can diverge. With a line search the rule refuses that input outright. Clip
+    after the rule instead: the parameter differences are read off the parameters, so a clipped step
+    still forms a valid pair. Wrapping the rule in :func:`~pytensor_ml.optim.guards.skip_if` does not
+    rescue a bad step either, because the loss is deterministic and a skipped step is recomputed
+    unchanged on the next call until the guard raises. A step that a guard would skip calls for a line
+    search, which shortens it, or a smaller rate. Finally, a parameter written between steps,
     with ``set_value`` for instance, forms a pair from a move the rule did not make, and that pair stays
     in the memory for up to ``memory_size`` steps.
 
@@ -981,7 +983,7 @@ def lbfgs_updates(
     Examples
     --------
     Compile the step yourself rather than going through :func:`~pytensor_ml.optim.train.compile_train`.
-    The rule returns the updates dict directly, with no line search:
+    The rule returns the updates dict directly, and takes the fixed step unless given a search:
 
     .. code-block:: python
 
