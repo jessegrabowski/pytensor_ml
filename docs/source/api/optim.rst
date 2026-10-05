@@ -28,6 +28,15 @@ Update rules
     adadelta
     lbfgs
 
+Line searches
+-------------
+
+.. autosummary::
+    :toctree: generated/
+
+    zoom_line_search
+    LineSearch
+
 Transforms
 ----------
 

@@ -35,6 +35,7 @@ from pytensor_ml.optim.guards import (
     nonfinite,
     skip_if,
 )
+from pytensor_ml.optim.line_search import LineSearch, zoom_line_search
 from pytensor_ml.optim.policy import reduce_on_plateau
 from pytensor_ml.optim.rules import (
     adadelta_updates,
@@ -70,6 +71,7 @@ __all__ = [
     "Decision",
     "Gradients",
     "LearningRate",
+    "LineSearch",
     "Rate",
     "Schedule",
     "SkipCondition",
@@ -123,4 +125,5 @@ __all__ = [
     "to_floatx",
     "to_updates",
     "trace",
+    "zoom_line_search",
 ]
