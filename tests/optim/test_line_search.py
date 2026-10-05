@@ -8,6 +8,7 @@ import pytest
 from scipy.optimize import line_search as scipy_line_search
 
 from pytensor_ml.optim.line_search import (
+    STEP,
     TRIAL,
     LineSearchOp,
     find_piece,
@@ -186,12 +187,13 @@ def test_a_piece_the_graph_lacks_is_reported_rather_than_rebuilt():
 
 
 def test_a_single_precision_search_stays_in_single_precision():
-    """Hyperparameters float32 cannot hold exactly would otherwise promote the trial step to float64,
-    which the float32 trial cannot take."""
+    """Hyperparameters and safeguards float32 cannot hold exactly would otherwise promote the search's
+    arithmetic to float64, deciding its conditions at a precision the float32 backends do not share,
+    and the float64 trial step that results cannot be fed to the float32 trial at all."""
     x = pt.vector("x", dtype="float32", shape=(2,))
     d = pt.vector("d", dtype="float32", shape=(2,))
     loss = OBJECTIVES["rosenbrock"](x)
-    search = zoom_line_search(max_learning_rate=0.1, increase_factor=1.7)
+    search = zoom_line_search(max_learning_rate=0.1, increase_factor=1.7, tol=1e-7)
     result = search_along(loss, [x], [pt.grad(loss, x)], [d], search)
     loss_in_double = OBJECTIVES["rosenbrock"](X)
     in_double = search_along(loss_in_double, [X], [pt.grad(loss_in_double, X)], [D], search)
@@ -201,7 +203,8 @@ def test_a_single_precision_search_stays_in_single_precision():
     step_size, failed, evaluations = pytensor.function([x, d], list(result))(x0, direction)
     expected = pytensor.function([X, D], list(in_double))(x0, direction)
 
-    assert result.step_size.dtype == "float32"
+    step = find_piece(result.step_size.owner.op, STEP)
+    assert not [variable for variable in step.fgraph.variables if variable.type.dtype == "float64"]
     np.testing.assert_allclose(step_size, expected[0], rtol=1e-5)
     assert (bool(failed), int(evaluations)) == (bool(expected[1]), int(expected[2]))
 

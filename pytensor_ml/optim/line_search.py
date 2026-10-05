@@ -140,11 +140,13 @@ class ZoomLineSearch:
 
     def _decrease_error(self, stepsize, value, slope, value0, slope0):
         """Return how far a trial misses sufficient decrease, by Armijo or approximate Wolfe."""
-        error = value - value0 - self.slope_rtol * stepsize * slope0
+        slope_rtol = pt.constant(self.slope_rtol, dtype=value.dtype)
+        error = value - value0 - slope_rtol * stepsize * slope0
         if self.approx_dec_rtol is not None:
+            approx_dec_rtol = pt.constant(self.approx_dec_rtol, dtype=value.dtype)
             approximate = pt.maximum(
-                slope - (2 * self.slope_rtol - 1.0) * slope0,
-                value - value0 - self.approx_dec_rtol * pt.abs(value0),
+                slope - (2 * slope_rtol - 1.0) * slope0,
+                value - value0 - approx_dec_rtol * pt.abs(value0),
             )
             error = pt.minimum(approximate, error)
         error = pt.maximum(error, 0.0)
@@ -152,7 +154,8 @@ class ZoomLineSearch:
 
     def _curvature_error(self, slope, slope0):
         """Return how far a trial misses the strong Wolfe curvature condition."""
-        error = pt.maximum(pt.abs(slope) - self.curv_rtol * pt.abs(slope0), 0.0)
+        curv_rtol = pt.constant(self.curv_rtol, dtype=slope.dtype)
+        error = pt.maximum(pt.abs(slope) - curv_rtol * pt.abs(slope0), 0.0)
         return pt.where(pt.isnan(error), np.inf, error)
 
     def step(
@@ -164,18 +167,19 @@ class ZoomLineSearch:
         guess: TensorVariable,
     ) -> tuple[State, TensorVariable]:
         where = pt.where
+        dtype = guess.dtype
         count = state["count"]
         low, value_low, slope_low = state["low"], state["value_low"], state["slope_low"]
         high, value_high, slope_high = state["high"], state["value_high"], state["slope_high"]
 
         # Both phases' candidates are cheap scalar arithmetic, so both are formed and the bracket flag
         # picks one; only the loss evaluation that follows is expensive.
-        increase_factor = pt.constant(self.increase_factor, dtype=guess.dtype)
+        increase_factor = pt.constant(self.increase_factor, dtype=dtype)
         bracketing_trial = where(pt.eq(count, 0), guess, increase_factor * state["stepsize"])
         if self.max_learning_rate is None:
             max_reached = pt.constant(np.array(False))
         else:
-            max_learning_rate = pt.constant(self.max_learning_rate, dtype=guess.dtype)
+            max_learning_rate = pt.constant(self.max_learning_rate, dtype=dtype)
             max_reached = bracketing_trial >= max_learning_rate
             bracketing_trial = pt.minimum(bracketing_trial, max_learning_rate)
 
@@ -191,20 +195,25 @@ class ZoomLineSearch:
             state["cubic_ref"],
             state["value_cubic_ref"],
         )
-        use_cubic = (cubic > left + 0.2 * width) & (cubic < right - 0.2 * width)
+        cubic_margin = pt.constant(0.2, dtype=dtype) * width
+        use_cubic = (cubic > left + cubic_margin) & (cubic < right - cubic_margin)
         quadratic = _quadratic_minimizer(low, value_low, slope_low, high, value_high)
+        quadratic_margin = pt.constant(0.1, dtype=dtype) * width
         use_quadratic = (
-            ~use_cubic & (quadratic > left + 0.1 * width) & (quadratic < right - 0.1 * width)
+            ~use_cubic
+            & (quadratic > left + quadratic_margin)
+            & (quadratic < right - quadratic_margin)
         )
         middle = where(use_cubic, cubic, where(use_quadratic, quadratic, (low + high) / 2.0))
         zooming = state["interval_found"]
-        stepsize = where(zooming, middle, bracketing_trial).astype(guess.dtype)
+        stepsize = where(zooming, middle, bracketing_trial).astype(dtype)
 
         value, slope = value_and_slope(stepsize)
         decrease_error = self._decrease_error(stepsize, value, slope, value0, slope0)
         curvature_error = self._curvature_error(slope, slope0)
-        satisfied = pt.maximum(decrease_error, curvature_error) <= self.tol
-        sufficient_decrease = decrease_error <= self.tol
+        tol = pt.constant(self.tol, dtype=dtype)
+        satisfied = pt.maximum(decrease_error, curvature_error) <= tol
+        sufficient_decrease = decrease_error <= tol
         out_of_steps = (count + 1) >= self.max_steps
         trial = (stepsize, value, slope)
 
@@ -247,7 +256,8 @@ class ZoomLineSearch:
         zoom["cubic_ref"] = where(high_is_middle | high_is_low, high, low)
         zoom["value_cubic_ref"] = where(high_is_middle | high_is_low, value_high, value_low)
         zoom["interval_found"] = state["interval_found"]
-        too_narrow = (width <= self.stepsize_precision) & (zoom["safe_stepsize"] > 0.0)
+        stepsize_precision = pt.constant(self.stepsize_precision, dtype=dtype)
+        too_narrow = (width <= stepsize_precision) & (zoom["safe_stepsize"] > 0.0)
         zoom["failed"] = (out_of_steps | too_narrow) & ~zoom["done"]
 
         next_state = {
