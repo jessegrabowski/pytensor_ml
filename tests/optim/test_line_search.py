@@ -134,6 +134,33 @@ def test_an_accepted_step_satisfies_the_strong_wolfe_conditions(name):
     assert abs(slope) <= 0.9 * abs(slope0)
 
 
+# Each row is (search arguments, first trial) and the step, failure flag and trial count on the quadratic
+# from zero along ones, where the slope at a step t is 2 * (t - 3) against -6 at the start.
+FIRST_TRIALS = {
+    "stops_at_the_cap": (({"max_learning_rate": 0.1}, 1.0), (0.1, False, 1)),
+    "falls_back_onto_the_cap": (({"max_steps": 1, "max_learning_rate": 5.9}, 5.9), (5.9, True, 1)),
+    "accepts_a_guess_other_than_one": (({}, 3.0), (3.0, False, 1)),
+}
+
+
+@pytest.mark.parametrize("case, expected", FIRST_TRIALS.values(), ids=FIRST_TRIALS.keys())
+def test_the_first_trial_follows_the_guess_and_the_cap(case, expected):
+    """At 0.1 the cap stops a search that has not bracketed, which counts as done. At 5.9 the one trial
+    allowed misses the curvature condition, so the search fails and falls back on that trial, which met
+    sufficient decrease. A guess of 3, the minimizer, is accepted where a guess of one would be too."""
+    arguments, guess = case
+    loss = OBJECTIVES["quadratic"](X)
+    result = search_along(
+        loss, [X], [pt.grad(loss, X)], [D], zoom_line_search(**arguments), guess=guess
+    )
+
+    step_size, failed, evaluations = pytensor.function([X, D], list(result))(
+        np.zeros(2), np.ones(2)
+    )
+
+    assert (float(step_size), bool(failed), int(evaluations)) == expected
+
+
 def test_a_search_from_a_nan_point_takes_no_step():
     """No trial can decrease a loss that is already NaN, and moving anyway would carry the NaN into
     the parameters, so the search falls back on a step of zero."""
