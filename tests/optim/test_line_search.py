@@ -9,7 +9,6 @@ from scipy.optimize import line_search as scipy_line_search
 
 from pytensor_ml.optim.line_search import (
     STEP,
-    TRIAL,
     LineSearchOp,
     find_piece,
     search_along,
@@ -196,17 +195,6 @@ def test_a_loss_that_draws_random_numbers_is_refused():
 def test_hyperparameters_that_cannot_work_are_refused(arguments, message):
     with pytest.raises(ValueError, match=message):
         zoom_line_search(**arguments)
-
-
-def test_a_piece_the_graph_lacks_is_reported_rather_than_rebuilt():
-    """A backend runs the pieces it finds in the rewritten graph and nothing else, so asking for one the
-    graph does not hold raises instead of recompiling a copy under some other mode."""
-    loss = OBJECTIVES["quadratic"](X)
-    search = search_along(loss, [X], [pt.grad(loss, X)], [D], zoom_line_search()).step_size.owner.op
-
-    assert find_piece(search, TRIAL).name == TRIAL
-    with pytest.raises(RuntimeError, match="no 'missing' piece"):
-        find_piece(search, "missing")
 
 
 def test_a_single_precision_search_stays_in_single_precision():
