@@ -169,7 +169,7 @@ def _literal(value: float) -> str:
 
 @cache
 def _zoom_kernel(search: ZoomLineSearch):
-    """The fused update for one configuration of the search. Metal compiles it on its first call."""
+    """Build the fused update for one search configuration, which Metal compiles on first call."""
     source = _ZOOM_SOURCE.format(
         n_fields=len(_ZOOM_FIELDS),
         **_FIELD,
@@ -195,15 +195,7 @@ def _zoom_kernel(search: ZoomLineSearch):
 
 @mlx_funcify.register(LineSearchOp)
 def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
-    """
-    Run every trial the search is allowed, holding its state once a trial reports that it is done.
-
-    Stopping early would mean reading the stop flag back to Python, which ``mx.compile`` refuses while
-    it traces, so the loop runs to ``max_steps`` and pays for each trial whether it needs it or not. A
-    zoom search at single precision on the GPU fuses each trial's bookkeeping into one Metal kernel
-    between loss evaluations; anything else runs the search's own step graph. The choice is made once,
-    from the default device when the function is built.
-    """
+    """Run every trial the search allows, holding the state once a trial reports that it is done."""
     kwargs.pop("storage_map", None)
     # The pieces as the linker rewrote them, converted by the backend's own OpFromGraph dispatch
     start_op, step_op, trial_op, finish_op = (
@@ -219,6 +211,8 @@ def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
     # Decided from the declared dtype: mlx quietly computes a float64 graph at single precision on the
     # GPU, so the arrays reaching the loop would claim float32 for a search declared in float64.
     single_precision = declared[_FIELD["value"]] == "float32"
+    # A zoom search at single precision on the GPU runs each trial's bookkeeping as one Metal kernel
+    # between loss evaluations, chosen once from the default device when the function is built
     kernel = (
         _zoom_kernel(search)
         if isinstance(search, ZoomLineSearch)
@@ -228,6 +222,8 @@ def mlx_funcify_LineSearchOp(op, node=None, **kwargs):
         else None
     )
 
+    # Stopping early would read the stop flag back to Python, which `mx.compile` refuses while it
+    # traces, so both loops run all `max_steps` trials
     def stepped(inputs, state):
         done = mx.array(False)
         for _ in range(search.max_steps):

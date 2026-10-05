@@ -21,17 +21,12 @@ ValueAndSlope = Callable[[TensorVariable], tuple[TensorVariable, TensorVariable]
 
 
 class LineSearch(Protocol):
-    """
-    A search for a step size along a direction, written as one iteration over a scalar state.
-
-    :func:`search_along` repeats :meth:`step` inside a ``scan`` that stops as soon as it reports it is
-    done, and every iteration evaluates the loss and its slope at exactly one trial step.
-    """
+    """A step-size search written as one trial per :meth:`step`, which :func:`search_along` repeats."""
 
     max_steps: int
 
     def init(self, value: TensorVariable, slope: TensorVariable) -> State:
-        """The state before the first trial, from the loss and its slope at a step of zero."""
+        """Return the state before the first trial, from the loss and its slope at a step of zero."""
         ...
 
     def step(
@@ -42,16 +37,16 @@ class LineSearch(Protocol):
         slope0: TensorVariable,
         guess: TensorVariable,
     ) -> tuple[State, TensorVariable]:
-        """Pick one trial step, evaluate it, and return the next state and whether to stop."""
+        """Evaluate one trial step and return the next state and whether to stop."""
         ...
 
     def finalize(self, state: State) -> tuple[TensorVariable, TensorVariable]:
-        """The step size to take and whether the search failed, from the state it stopped in."""
+        """Return the step size to take and whether the search failed, from its final state."""
         ...
 
 
 def _cubic_minimizer(a, value_a, slope_a, b, value_b, c, value_c):
-    """Minimizer of the cubic through three values and the slope at ``a``, or NaN if it has none."""
+    """Return the minimizer of the cubic through three values and the slope at ``a``, or NaN."""
     db = b - a
     dc = c - a
     denominator = (db * dc) ** 2 * (db - dc)
@@ -63,7 +58,7 @@ def _cubic_minimizer(a, value_a, slope_a, b, value_b, c, value_c):
 
 
 def _quadratic_minimizer(a, value_a, slope_a, b, value_b):
-    """Minimizer of the quadratic through two values and the slope at ``a``."""
+    """Return the minimizer of the quadratic through two values and the slope at ``a``."""
     db = b - a
     curvature = (value_b - value_a - slope_a * db) / db**2
     return a - slope_a / (2.0 * curvature)
@@ -94,14 +89,7 @@ _ZOOM_FIELDS = (
 
 @dataclass(frozen=True)
 class ZoomLineSearch:
-    """
-    A line search for a step satisfying the strong Wolfe conditions, by bracketing and then zooming.
-
-    Built by :func:`zoom_line_search`, which documents the parameters. It follows optax's
-    ``scale_by_zoom_linesearch``: the bracket grows from the initial guess until it contains a point
-    satisfying both conditions, then narrows by safeguarded cubic or quadratic interpolation, falling
-    back to bisection.
-    """
+    """A strong Wolfe line search that brackets and then zooms, built by :func:`zoom_line_search`."""
 
     max_steps: int
     slope_rtol: float
@@ -151,7 +139,7 @@ class ZoomLineSearch:
         return {field: state[field] for field in _ZOOM_FIELDS}
 
     def _decrease_error(self, stepsize, value, slope, value0, slope0):
-        """How far a trial misses sufficient decrease, by Armijo or by the approximate Wolfe test."""
+        """Return how far a trial misses sufficient decrease, by Armijo or approximate Wolfe."""
         error = value - value0 - self.slope_rtol * stepsize * slope0
         if self.approx_dec_rtol is not None:
             approximate = pt.maximum(
@@ -163,7 +151,7 @@ class ZoomLineSearch:
         return pt.where(pt.isnan(error), np.inf, error)
 
     def _curvature_error(self, slope, slope0):
-        """How far a trial misses the strong Wolfe curvature condition."""
+        """Return how far a trial misses the strong Wolfe curvature condition."""
         error = pt.maximum(pt.abs(slope) - self.curv_rtol * pt.abs(slope0), 0.0)
         return pt.where(pt.isnan(error), np.inf, error)
 

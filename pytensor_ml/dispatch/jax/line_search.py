@@ -8,7 +8,7 @@ from pytensor_ml.optim.line_search import FINISH, START, STEP, LineSearchOp, fin
 
 @jax_funcify.register(LineSearchOp)
 def jax_funcify_LineSearchOp(op, node=None, **kwargs):
-    """Run the search's ``step`` in a ``lax.while_loop``, since JAX cannot run a ``scan`` that stops early."""
+    """Run the search's ``step`` piece in a ``lax.while_loop`` that stops when ``step`` does."""
     kwargs.pop("storage_map", None)
     start, step, finish = (
         jax_funcify(find_piece(op, name), **kwargs) for name in (START, STEP, FINISH)
