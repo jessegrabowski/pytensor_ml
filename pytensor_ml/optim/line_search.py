@@ -155,7 +155,14 @@ class ZoomLineSearch:
         error = pt.maximum(pt.abs(slope) - self.curv_rtol * pt.abs(slope0), 0.0)
         return pt.where(pt.isnan(error), np.inf, error)
 
-    def step(self, state, value_and_slope, value0, slope0, guess):
+    def step(
+        self,
+        state: State,
+        value_and_slope: ValueAndSlope,
+        value0: TensorVariable,
+        slope0: TensorVariable,
+        guess: TensorVariable,
+    ) -> tuple[State, TensorVariable]:
         where = pt.where
         count = state["count"]
         low, value_low, slope_low = state["low"], state["value_low"], state["slope_low"]
@@ -259,7 +266,7 @@ class ZoomLineSearch:
         }
         return next_state, next_state["done"] | next_state["failed"]
 
-    def finalize(self, state):
+    def finalize(self, state: State) -> tuple[TensorVariable, TensorVariable]:
         # A failed search falls back on the best step that met sufficient decrease, or on not moving at
         # all when the last trial was not even finite.
         fall_back = state["failed"] & (
