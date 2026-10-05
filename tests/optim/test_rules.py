@@ -874,6 +874,16 @@ def test_lbfgs_line_search_refuses_input_other_than_the_loss():
         chain(clip_by_global_norm(1.0), lbfgs(line_search=zoom_line_search()))(loss, [p])
 
 
+def test_lbfgs_searches_by_default():
+    """The alias defaults to the zoom search, which needs the loss, so precomputed gradients are refused
+    unless the fixed step is asked for."""
+    p = trainable(np.zeros(2), name="w")
+
+    with pytest.raises(ValueError, match="needs the loss graph"):
+        lbfgs()([2 * (p - 1.0)], [p])
+    lbfgs(line_search=None)([2 * (p - 1.0)], [p])
+
+
 def test_lbfgs_rejects_a_zero_memory_size():
     p = trainable(np.zeros(2), name="w")
     with pytest.raises(ValueError, match="memory_size must be at least 1"):

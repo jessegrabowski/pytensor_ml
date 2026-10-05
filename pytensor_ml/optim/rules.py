@@ -969,7 +969,7 @@ def lbfgs_updates(
         multiplier in ``{namespace}/line_search/step_size``, the last search's trial count in
         ``{namespace}/line_search/evaluations``, and the number of searches that have failed so far in
         ``{namespace}/line_search/failures``. Default None, which takes every step at
-        ``learning_rate``.
+        ``learning_rate``. The :func:`~pytensor_ml.optim.lbfgs` alias searches by default.
     namespace : str
         Prefix for every state slot this rule allocates, so two rules in one graph keep separate state
         rather than reusing each other's. Default is the rule's own name.

@@ -5,9 +5,14 @@ import pytest
 
 pytest.importorskip("jax")
 
+from pytensor.compile.mode import get_mode
+
+from pytensor_ml.optim import compile_train, lbfgs
 from pytensor_ml.optim.line_search import search_along, zoom_line_search
+from pytensor_ml.params import trainable
 from tests.dispatch.jax.test_basic import jax_mode
 from tests.optim.test_line_search import OBJECTIVES, PINNED, ROSENBROCK_START, D, X
+from tests.optim.test_rules import OPTAX_LBFGS_ROSENBROCK
 
 
 @pytest.mark.parametrize("case, expected", PINNED.values(), ids=PINNED.keys())
@@ -77,3 +82,15 @@ def test_the_search_on_jax_matches_the_default_backend(
 
     np.testing.assert_allclose(float(on_jax[0]), float(on_default[0]), rtol=1e-9)
     assert (bool(on_jax[1]), int(on_jax[2])) == (bool(on_default[1]), int(on_default[2]))
+
+
+def test_lbfgs_with_a_line_search_follows_optax_on_jax():
+    """The whole training step on JAX, under the backend's own compile mode: the rule's step needs
+    the fast_run rewrites that the bare JAX mode of these tests leaves out."""
+    point = trainable(ROSENBROCK_START.copy(), name="x")
+    loss = OBJECTIVES["rosenbrock"](point)
+    step = compile_train(loss, lbfgs(), inputs=[], compile_kwargs={"mode": get_mode("JAX")})
+
+    losses = [float(step()) for _ in range(12)]
+
+    np.testing.assert_allclose(losses, OPTAX_LBFGS_ROSENBROCK, rtol=1e-10)
