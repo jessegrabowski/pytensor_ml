@@ -87,16 +87,12 @@ def test_the_search_takes_the_step_optax_takes(case, expected):
 
 
 @pytest.mark.parametrize(
-    "case",
-    [
-        PINNED[name][0]
-        for name in ("accepts_the_guess", "zooms_into_a_bracket", "grows_until_it_brackets")
-    ],
-    ids=["accepts_the_guess", "zooms_into_a_bracket", "grows_until_it_brackets"],
+    "name", ["accepts_the_guess", "zooms_into_a_bracket", "grows_until_it_brackets"]
 )
-def test_the_search_agrees_with_scipys_strong_wolfe_search(case):
+def test_the_search_agrees_with_scipys_strong_wolfe_search(name):
     """An implementation that shares no code with the port, and lands on the same step wherever the
     two searches visit the same trials."""
+    case, _ = PINNED[name]
     objective, x0, _, max_steps = case
     step_size, _, _, direction = search(*case)
 
