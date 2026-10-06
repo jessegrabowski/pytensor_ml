@@ -55,6 +55,21 @@ def test_additive_mask(is_causal, rng):
     compare_jax_and_py([q_sym, k_sym, v_sym], out, [q, k, v], assert_fn=assert_close)
 
 
+@pytest.mark.parametrize("with_mask", [False, True], ids=["causal_only", "mask_and_causal"])
+def test_a_query_shorter_than_its_keys_sees_the_whole_prefix(with_mask, rng):
+    """Decoding from a key-value cache: two queries over four keys. The triangle aligns bottom-right,
+    so the first query sees keys 0 to 2 and the second all four."""
+    q = rng.normal(size=(2, 3, 2, 4)).astype(floatX)
+    k, v = (rng.normal(size=(2, 3, 4, 4)).astype(floatX) for _ in range(2))
+    mask = np.where(rng.normal(size=(2, 3, 2, 4)) > 0, 0.0, -np.inf).astype(floatX)
+    mask[:, :, :, 0] = 0.0
+    q_sym, k_sym, v_sym = symbolic_like(q, k, v)
+    out = scaled_dot_product_attention(
+        q_sym, k_sym, v_sym, mask=pt.as_tensor(mask) if with_mask else None, is_causal=True
+    )
+    compare_jax_and_py([q_sym, k_sym, v_sym], out, [q, k, v], assert_fn=assert_close)
+
+
 def test_dispatch_auto_registers():
     """Loading JAX's dispatch must auto-register ours -- no `import pytensor_ml.dispatch.jax` needed."""
     from pytensor.link.jax.dispatch import jax_funcify
