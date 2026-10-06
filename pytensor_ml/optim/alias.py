@@ -7,6 +7,7 @@ from pytensor_ml.optim.base import (
     Transform,
     Updates,
 )
+from pytensor_ml.optim.line_search import LineSearch, zoom_line_search
 from pytensor_ml.optim.rules import (
     _require_numeric_learning_rate,
     adadelta_updates,
@@ -363,6 +364,7 @@ def lbfgs(
     memory_size: int = 10,
     scale_init_precond: bool = True,
     *,
+    line_search: LineSearch | None = zoom_line_search(),
     namespace: str = "lbfgs",
 ) -> Transform:
     """
@@ -373,10 +375,15 @@ def lbfgs(
 
     Examples
     --------
-    A quasi-Newton direction from a memory of recent parameter and gradient differences, taken at a
-    fixed fraction with no line search. It reads the change between consecutive gradients as curvature,
-    so the loss has to be the same function from one step to the next: full batch, no dropout. For the
-    same reason it takes the loss's own gradients: put a clip after it in a chain, never ahead of it.
+    A quasi-Newton direction from a memory of recent parameter and gradient differences, searched along
+    by a strong Wolfe line search with ``learning_rate`` as the first trial. ``line_search=None`` takes
+    every step at ``learning_rate`` instead, which is also what
+    :func:`~pytensor_ml.optim.rules.lbfgs_updates` does unless given a search. On the mlx backend every
+    search runs all ``max_steps`` of its trials, so each step costs that many loss and gradient
+    evaluations, and a smaller ``zoom_line_search(max_steps=...)`` budget makes it cheaper. It reads the
+    change between consecutive gradients as curvature, so the loss has to be the same function from one
+    step to the next: full batch, no dropout. For the same reason it takes the loss's own gradients: put
+    a clip after it in a chain, never ahead of it.
 
     .. code-block:: python
 
@@ -402,6 +409,7 @@ def lbfgs(
             learning_rate=learning_rate,
             memory_size=memory_size,
             scale_init_precond=scale_init_precond,
+            line_search=line_search,
             namespace=namespace,
         )
 

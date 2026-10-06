@@ -23,7 +23,10 @@ ValueAndSlope = Callable[[TensorVariable], tuple[TensorVariable, TensorVariable]
 class LineSearch(Protocol):
     """A step-size search written as one trial per :meth:`step`, which :func:`search_along` repeats."""
 
-    max_steps: int
+    @property
+    def max_steps(self) -> int:
+        """Return the most trials one search may take."""
+        ...
 
     def init(self, value: TensorVariable, slope: TensorVariable) -> State:
         """Return the state before the first trial, from the loss and its slope at a step of zero."""

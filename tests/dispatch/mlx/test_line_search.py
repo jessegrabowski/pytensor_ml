@@ -8,6 +8,7 @@ pytest.importorskip("mlx.core")
 from pytensor.compile.mode import Mode
 from pytensor.link.mlx.linker import MLXLinker
 
+from pytensor_ml.optim import compile_train, lbfgs
 from pytensor_ml.optim.line_search import (
     STEP,
     LineSearchOp,
@@ -15,6 +16,7 @@ from pytensor_ml.optim.line_search import (
     search_along,
     zoom_line_search,
 )
+from pytensor_ml.params import trainable
 from tests.dispatch.mlx.test_basic import mx
 from tests.optim.test_line_search import OBJECTIVES, PINNED
 
@@ -109,3 +111,25 @@ def test_the_dispatch_runs_the_pieces_the_compile_mode_rewrote():
         return len(find_piece(search, STEP).fgraph.apply_nodes)
 
     assert step_nodes_under(mode) < step_nodes_under(mode.excluding("fusion"))
+
+
+def test_lbfgs_with_a_line_search_trains_as_on_the_default_backend():
+    """The whole training step on mlx, at single precision, with a short trial budget: mlx runs every
+    trial the budget allows, so the budget sets what each step costs here."""
+    A = np.array([[3.0, 0.5], [0.5, 1.0]], dtype="float32")
+    start = np.array([5.0, -3.0], dtype="float32")
+    point = trainable(start.copy(), name="w")
+    loss = 0.5 * point @ pt.constant(A) @ point
+
+    def losses_on(mode):
+        point.set_value(start.copy())
+        # The rule's own state and rate follow floatX, which has to be single precision on the GPU too
+        with pytensor.config.change_flags(floatX="float32"):
+            rule = lbfgs(line_search=zoom_line_search(max_steps=5))
+            step = compile_train(loss, rule, inputs=[], compile_kwargs={"mode": mode})
+        return [float(step()) for _ in range(8)]
+
+    on_mlx = losses_on(Mode(linker=MLXLinker(), optimizer="fast_run"))
+    on_default = losses_on(None)
+
+    np.testing.assert_allclose(on_mlx, on_default, rtol=1e-4, atol=1e-12)
