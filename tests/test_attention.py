@@ -60,6 +60,18 @@ def test_sdpa_matches_reference(is_causal, scale, rng):
     np.testing.assert_allclose(out, sdpa_np(q, k, v, is_causal=is_causal, scale=scale), atol=1e-5)
 
 
+def test_sdpa_causal_query_shorter_than_its_keys_sees_the_whole_prefix(rng):
+    """Decoding from a key-value cache: the triangle aligns bottom-right, so each of the two queries
+    attends to every key up to its own position at the end of the five."""
+    q = rng.normal(size=(2, 3, 2, 4)).astype(floatX)
+    k = rng.normal(size=(2, 3, 5, 4)).astype(floatX)
+    v = rng.normal(size=(2, 3, 5, 6)).astype(floatX)
+
+    out = scaled_dot_product_attention(q, k, v, is_causal=True).eval()
+
+    np.testing.assert_allclose(out, sdpa_np(q, k, v, is_causal=True), atol=1e-5)
+
+
 def test_sdpa_grouped_query(rng):
     b, n_head, n_kv_head, seq, dim = 2, 6, 2, 4, 5
     q = rng.normal(size=(b, n_head, seq, dim)).astype(floatX)
